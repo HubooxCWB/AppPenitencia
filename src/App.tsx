@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -25,6 +25,8 @@ import {
   Lock,
   Mail,
   ArrowRight,
+  Eye,
+  EyeOff,
   LogOut,
   Calendar,
   Map as MapIcon,
@@ -64,8 +66,8 @@ const AUTH_STORAGE_KEY = 'penitencia-auth-user';
 const FORCE_PASSWORD_CHANGE_STORAGE_KEY = 'penitencia-force-password-change';
 const MOUNTAIN_RANGES_STORAGE_KEY = 'penitencia-mountain-ranges';
 const MOUNTAIN_RANGES_BACKUP_STORAGE_KEY = 'penitencia-mountain-ranges-backup';
-const ADMIN_EMAIL = String(import.meta.env.VITE_ADMIN_EMAIL ?? 'huboox.rec@gmail.com').trim().toLowerCase();
-const TEMP_PASSWORD = String(import.meta.env.VITE_TEMP_PASSWORD ?? 'trekking');
+const ADMIN_EMAIL = String(import.meta.env.VITE_ADMIN_EMAIL || 'huboox.rec@gmail.com').trim().toLowerCase() || 'huboox.rec@gmail.com';
+const TEMP_PASSWORD = String(import.meta.env.VITE_TEMP_PASSWORD || 'trekking') || 'trekking';
 const normalizeText = (value: unknown) =>
   String(value ?? '')
     .normalize('NFD')
@@ -871,9 +873,21 @@ export default function App() {
     }
   }, [cloudSyncEnabled, mountainRanges]);
 
+  // Hydrate from cloud only after auth bootstrap and when user is set, so the request uses the user session.
   useEffect(() => {
     if (typeof window === 'undefined') {
       setIsCloudBootstrapping(false);
+      return;
+    }
+
+    if (!cloudSyncEnabled || isAuthBootstrapping) {
+      if (!cloudSyncEnabled) setIsCloudBootstrapping(false);
+      return;
+    }
+
+    // Wait for login so loadRangesFromCloud uses the session token (Vercel has session; localhost was loading before login with anon).
+    if (!user) {
+      hasAttemptedCloudHydration.current = false;
       return;
     }
 
@@ -881,11 +895,6 @@ export default function App() {
       return;
     }
     hasAttemptedCloudHydration.current = true;
-
-    if (!cloudSyncEnabled) {
-      setIsCloudBootstrapping(false);
-      return;
-    }
 
     setIsCloudBootstrapping(true);
 
@@ -956,7 +965,7 @@ export default function App() {
       isCancelled = true;
       window.clearTimeout(bootstrapWatchdog);
     };
-  }, [cloudSyncEnabled]);
+  }, [cloudSyncEnabled, isAuthBootstrapping, user]);
 
   const isAdminUser = user?.role === 'ADMIN';
   const currentUserKeys = Array.from(
@@ -1800,6 +1809,7 @@ function LoginScreen({
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -1896,14 +1906,23 @@ function LoginScreen({
             <div className="relative">
               <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={20} />
               <input 
-                type="password" 
+                type={showPassword ? 'text' : 'password'} 
                 placeholder={mode === 'signin' ? 'Sua senha' : 'Crie uma senha'}
                 autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-4 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
+                className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
                 required
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-primary/60 hover:text-primary transition-colors p-1"
+                aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                title={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+              >
+                {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+              </button>
             </div>
           </div>
 
@@ -1926,18 +1945,6 @@ function LoginScreen({
             )}
           </button>
 
-          <div className="rounded-2xl border border-primary/20 bg-primary/5 p-3 space-y-1.5">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Supabase Auth</p>
-            <p className="text-[11px] text-slate-300">
-              Login real por e-mail + senha (senha criptografada pelo Supabase).
-            </p>
-            <p className="text-[11px] text-slate-400">
-              Admin: <span className="font-bold text-primary">{ADMIN_EMAIL}</span> | senha inicial: <span className="font-bold text-primary">{TEMP_PASSWORD}</span>
-            </p>
-            <p className="text-[11px] text-slate-500">
-              Amigos podem entrar com senha temporária. No primeiro acesso, o app exige troca de senha.
-            </p>
-          </div>
         </form>
 
         <footer className="text-center">
@@ -1968,6 +1975,8 @@ function PasswordUpdateScreen({
 }) {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
@@ -2032,26 +2041,44 @@ function PasswordUpdateScreen({
             <div className="relative">
               <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={20} />
               <input
-                type="password"
+                type={showNewPassword ? 'text' : 'password'}
                 autoComplete="new-password"
                 placeholder="Nova senha"
                 value={newPassword}
                 onChange={(event) => setNewPassword(event.target.value)}
-                className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-4 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
+                className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
                 required
               />
+              <button
+                type="button"
+                onClick={() => setShowNewPassword((v) => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-primary/60 hover:text-primary transition-colors p-1"
+                aria-label={showNewPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                title={showNewPassword ? 'Ocultar senha' : 'Mostrar senha'}
+              >
+                {showNewPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+              </button>
             </div>
             <div className="relative">
               <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={20} />
               <input
-                type="password"
+                type={showConfirmPassword ? 'text' : 'password'}
                 autoComplete="new-password"
                 placeholder="Confirmar nova senha"
                 value={confirmPassword}
                 onChange={(event) => setConfirmPassword(event.target.value)}
-                className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-4 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
+                className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
                 required
               />
+              <button
+                type="button"
+                onClick={() => setShowConfirmPassword((v) => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-primary/60 hover:text-primary transition-colors p-1"
+                aria-label={showConfirmPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                title={showConfirmPassword ? 'Ocultar senha' : 'Mostrar senha'}
+              >
+                {showConfirmPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+              </button>
             </div>
           </div>
 
@@ -3154,7 +3181,12 @@ function MountainRangeAccordion({
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          onDeleteCompletion(range.id, peak.id, comp.id);
+                                          const message = peak.name
+                                            ? `Excluir a conquista de "${peak.name}" (${comp.date})?`
+                                            : `Excluir esta conquista (${comp.date})?`;
+                                          if (window.confirm(message)) {
+                                            onDeleteCompletion(range.id, peak.id, comp.id);
+                                          }
                                         }}
                                         className="absolute -top-2 -right-2 size-5 bg-red-500 text-white rounded-full flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity z-10"
                                       >

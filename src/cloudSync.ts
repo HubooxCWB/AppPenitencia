@@ -54,8 +54,9 @@ interface SupabaseAuthSession {
 
 const AUTH_SESSION_STORAGE_KEY = 'penitencia-supabase-auth-session';
 const DEFAULT_ADMIN_USERNAME = 'penitencia';
-const ADMIN_EMAIL = String(import.meta.env.VITE_ADMIN_EMAIL ?? 'huboox.rec@gmail.com').trim().toLowerCase();
-const ADMIN_USERNAME = String(import.meta.env.VITE_ADMIN_USERNAME ?? DEFAULT_ADMIN_USERNAME).trim().toLowerCase();
+const DEFAULT_ADMIN_EMAIL = 'huboox.rec@gmail.com';
+const ADMIN_EMAIL = String(import.meta.env.VITE_ADMIN_EMAIL || DEFAULT_ADMIN_EMAIL).trim().toLowerCase() || DEFAULT_ADMIN_EMAIL;
+const ADMIN_USERNAME = String(import.meta.env.VITE_ADMIN_USERNAME || DEFAULT_ADMIN_USERNAME).trim().toLowerCase() || DEFAULT_ADMIN_USERNAME;
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
