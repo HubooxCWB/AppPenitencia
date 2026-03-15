@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -75,6 +75,199 @@ const normalizeText = (value: unknown) =>
     .toLowerCase()
     .trim();
 
+const buildParticipantNameMap = (
+  registeredUsers: CloudAppUser[],
+  currentUser?: User | null,
+) => {
+  const participantNameMap = new Map<string, string>();
+  const registerName = (alias: unknown, displayName: unknown) => {
+    const normalizedAlias = normalizeText(alias);
+    const trimmedDisplayName = String(displayName ?? '').trim();
+    if (!normalizedAlias || !trimmedDisplayName) {
+      return;
+    }
+
+    participantNameMap.set(normalizedAlias, trimmedDisplayName);
+  };
+
+  registeredUsers.forEach(registeredUser => {
+    registerName(registeredUser.display_name, registeredUser.display_name);
+    registerName(registeredUser.username, registeredUser.display_name);
+
+    const email = String(registeredUser.email ?? '').trim().toLowerCase();
+    if (email.includes('@')) {
+      registerName(email.split('@')[0], registeredUser.display_name);
+    }
+  });
+
+  if (currentUser) {
+    registerName(currentUser.name, currentUser.name);
+    registerName(currentUser.username, currentUser.name);
+
+    const email = String(currentUser.email ?? '').trim().toLowerCase();
+    if (email.includes('@')) {
+      registerName(email.split('@')[0], currentUser.name);
+    }
+  }
+
+  return participantNameMap;
+};
+
+const buildParticipantAvatarMap = (
+  registeredUsers: CloudAppUser[],
+  currentUser?: User | null,
+) => {
+  const participantAvatarMap = new Map<string, string>();
+  const registerAvatar = (alias: unknown, avatar: unknown) => {
+    const normalizedAlias = normalizeText(alias);
+    const trimmedAvatar = String(avatar ?? '').trim();
+    if (!normalizedAlias || !trimmedAvatar) {
+      return;
+    }
+
+    participantAvatarMap.set(normalizedAlias, trimmedAvatar);
+  };
+
+  registeredUsers.forEach(registeredUser => {
+    registerAvatar(registeredUser.display_name, registeredUser.avatar_url);
+    registerAvatar(registeredUser.username, registeredUser.avatar_url);
+
+    const email = String(registeredUser.email ?? '').trim().toLowerCase();
+    if (email.includes('@')) {
+      registerAvatar(email.split('@')[0], registeredUser.avatar_url);
+    }
+  });
+
+  if (currentUser) {
+    registerAvatar(currentUser.name, currentUser.avatar);
+    registerAvatar(currentUser.username, currentUser.avatar);
+
+    const email = String(currentUser.email ?? '').trim().toLowerCase();
+    if (email.includes('@')) {
+      registerAvatar(email.split('@')[0], currentUser.avatar);
+    }
+  }
+
+  return participantAvatarMap;
+};
+
+const resolveParticipantDisplayName = (
+  participant: unknown,
+  participantNameMap: Map<string, string>,
+) => {
+  const trimmedParticipant = String(participant ?? '').trim();
+  if (!trimmedParticipant) {
+    return '';
+  }
+
+  return participantNameMap.get(normalizeText(trimmedParticipant)) ?? trimmedParticipant;
+};
+
+const sanitizeParticipants = (
+  participants: string[],
+  participantNameMap: Map<string, string>,
+) =>
+  Array.from(
+    new Set(
+      participants
+        .map(participant => resolveParticipantDisplayName(participant, participantNameMap))
+        .filter(Boolean),
+    ),
+  );
+
+const sanitizeUsername = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, '')
+    .trim();
+
+const readFileAsDataUrl = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string' && reader.result) {
+        resolve(reader.result);
+        return;
+      }
+
+      reject(new Error('Falha ao ler imagem.'));
+    };
+    reader.onerror = () => reject(new Error('Falha ao ler imagem.'));
+    reader.readAsDataURL(file);
+  });
+
+const loadImageElement = (src: string) =>
+  new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Falha ao carregar imagem.'));
+    image.src = src;
+  });
+
+const buildOptimizedAvatarDataUrl = async (file: File, size = 512): Promise<string> => {
+  const sourceDataUrl = await readFileAsDataUrl(file);
+  const image = await loadImageElement(sourceDataUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+
+  const context = canvas.getContext('2d');
+  if (!context) {
+    throw new Error('Falha ao preparar imagem.');
+  }
+
+  const sourceWidth = image.naturalWidth || image.width;
+  const sourceHeight = image.naturalHeight || image.height;
+  const cropSize = Math.min(sourceWidth, sourceHeight);
+  const sourceX = Math.max(0, Math.floor((sourceWidth - cropSize) / 2));
+  const sourceY = Math.max(0, Math.floor((sourceHeight - cropSize) / 2));
+
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  context.clearRect(0, 0, size, size);
+  context.drawImage(
+    image,
+    sourceX,
+    sourceY,
+    cropSize,
+    cropSize,
+    0,
+    0,
+    size,
+    size,
+  );
+
+  return canvas.toDataURL('image/jpeg', 0.92);
+};
+
+const mergeUserWithCloudDirectory = (
+  baseUser: User,
+  rows: CloudAppUser[] | null | undefined,
+): User => {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return baseUser;
+  }
+
+  const matchedRow = rows.find(row =>
+    String(row.auth_user_id ?? '') === baseUser.id ||
+    normalizeText(row.email) === normalizeText(baseUser.email) ||
+    normalizeText(row.username) === normalizeText(baseUser.username),
+  );
+
+  if (!matchedRow) {
+    return baseUser;
+  }
+
+  return {
+    ...baseUser,
+    name: String(matchedRow.display_name ?? '').trim() || baseUser.name,
+    username: String(matchedRow.username ?? '').trim() || baseUser.username,
+    avatar: String(matchedRow.avatar_url ?? '').trim() || baseUser.avatar,
+  };
+};
+
 const toAppUserFromAuthProfile = (profile: CloudAuthProfile): User => ({
   id: profile.id,
   name: profile.displayName,
@@ -105,8 +298,6 @@ type RankingLeader = Leader & {
 };
 
 const FIXED_STATE = 'Paraná' as const;
-const INITIAL_OPEN_RANGE_ID = 'serra-do-ibitiraquire';
-const SECONDARY_OPEN_RANGE_ID = 'serra-da-baitaca';
 const BAITACA_RANGE_ID = 'serra-da-baitaca';
 const LOCAL_TYPE_LABELS: Record<LocalType, string> = {
   pico: 'Pico',
@@ -766,6 +957,8 @@ export default function App() {
   const [isAuthBootstrapping, setIsAuthBootstrapping] = useState(cloudSyncEnabled);
   const [isPasswordChangeRequired, setIsPasswordChangeRequired] = useState(false);
   const [isCloudBootstrapping, setIsCloudBootstrapping] = useState(false);
+  const [registeredUsers, setRegisteredUsers] = useState<CloudAppUser[]>([]);
+  const [isLoadingRegisteredUsers, setIsLoadingRegisteredUsers] = useState(false);
   const hasInitializedMountainRangesPersistence = useRef(false);
   const hasAttemptedCloudHydration = useRef(false);
   const hasHydratedCloudRanges = useRef(!cloudSyncEnabled);
@@ -778,6 +971,8 @@ export default function App() {
     completionId?: string,
     initialData?: { date: string, participants: string[], wikilocUrl?: string }
   } | null>(null);
+  const participantNameMap = buildParticipantNameMap(registeredUsers, user);
+  const participantAvatarMap = buildParticipantAvatarMap(registeredUsers, user);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -813,7 +1008,9 @@ export default function App() {
           return;
         }
 
-        const mappedUser = toAppUserFromAuthProfile(authProfile);
+        const baseUser = toAppUserFromAuthProfile(authProfile);
+        const cloudUsers = await listCloudUsers();
+        const mappedUser = mergeUserWithCloudDirectory(baseUser, cloudUsers);
         setUser(mappedUser);
         setCurrentScreen('HOME');
         if (typeof window !== 'undefined') {
@@ -845,6 +1042,30 @@ export default function App() {
       isCancelled = true;
     };
   }, [cloudSyncEnabled]);
+
+  useEffect(() => {
+    if (!cloudSyncEnabled || !user) {
+      setRegisteredUsers([]);
+      setIsLoadingRegisteredUsers(false);
+      return;
+    }
+
+    let isCancelled = false;
+
+    const loadRegisteredUsers = async () => {
+      setIsLoadingRegisteredUsers(true);
+      const rows = await listCloudUsers();
+      if (!isCancelled) {
+        setRegisteredUsers(Array.isArray(rows) ? rows : []);
+        setIsLoadingRegisteredUsers(false);
+      }
+    };
+
+    void loadRegisteredUsers();
+    return () => {
+      isCancelled = true;
+    };
+  }, [cloudSyncEnabled, user]);
 
   useEffect(() => {
     if (!hasInitializedMountainRangesPersistence.current) {
@@ -972,7 +1193,16 @@ export default function App() {
     new Set([normalizeText(user?.name), normalizeText(user?.username)].filter(Boolean)),
   );
   const isCompletionOwnedByCurrentUser = (completion?: PeakCompletion | null) => {
-    if (!completion || !Array.isArray(completion.participants) || completion.participants.length === 0) {
+    if (!completion) {
+      return false;
+    }
+
+    // Prefer explicit owner when available (new completions).
+    if (completion.ownerUserId && user?.id) {
+      return completion.ownerUserId === user.id;
+    }
+
+    if (!Array.isArray(completion.participants) || completion.participants.length === 0) {
       return false;
     }
 
@@ -984,15 +1214,6 @@ export default function App() {
       currentUserKeys.includes(normalizeText(participant)),
     );
   };
-  const sanitizeParticipants = (participants: string[]) =>
-    Array.from(
-      new Set(
-        participants
-          .map(participant => String(participant ?? '').trim())
-          .filter(Boolean),
-      ),
-    );
-
   const handleLogin = (userData: User, options?: { requiresPasswordChange?: boolean }) => {
     setUser(userData);
     const requiresPasswordChange = Boolean(options?.requiresPasswordChange);
@@ -1033,6 +1254,32 @@ export default function App() {
       window.localStorage.removeItem(FORCE_PASSWORD_CHANGE_STORAGE_KEY);
     }
     setCurrentScreen('HOME');
+  };
+
+  const handleProfileUpdate = (updates: { username: string; avatar: string }) => {
+    if (!user) {
+      return;
+    }
+
+    const sanitizedNextUsername = sanitizeUsername(updates.username);
+    const trimmedAvatar = updates.avatar.trim();
+    const nextUser: User = {
+      ...user,
+      username: sanitizedNextUsername || user.username,
+      avatar: trimmedAvatar || user.avatar,
+    };
+
+    setUser(nextUser);
+
+    if (cloudSyncEnabled && nextUser.email) {
+      void upsertCloudUser({
+        authUserId: nextUser.id,
+        email: nextUser.email,
+        username: nextUser.username,
+        displayName: nextUser.name,
+        avatarUrl: nextUser.avatar,
+      });
+    }
   };
 
   const togglePeak = (rangeId: string, peakId: string, completionId?: string) => {
@@ -1109,9 +1356,15 @@ export default function App() {
       return;
     }
 
-    const participantsToPersist = isAdminUser
-      ? sanitizeParticipants(data.participants)
-      : [user.name];
+    const baseParticipants = sanitizeParticipants(data.participants, participantNameMap);
+    const currentUserDisplayName = resolveParticipantDisplayName(user.name, participantNameMap) || user.name;
+    const normalizedCurrentUserName = normalizeText(currentUserDisplayName);
+    const hasCurrentUser = baseParticipants.some(
+      participant => normalizeText(participant) === normalizedCurrentUserName,
+    );
+    const participantsToPersist = hasCurrentUser
+      ? baseParticipants
+      : [...baseParticipants, currentUserDisplayName];
 
     setMountainRanges(prev => withRangeStats(prev.map(range => {
       if (range.id !== rangeId) return range;
@@ -1121,11 +1374,18 @@ export default function App() {
         
         if (completionId) {
           // Update existing completion
+          const existing = peak.completions.find(c => c.id === completionId);
           return {
             ...peak,
             completions: peak.completions.map(c => 
               c.id === completionId 
-                ? { ...c, date: data.date, participants: participantsToPersist, wikilocUrl: data.wikilocUrl }
+                ? { 
+                    ...c, 
+                    date: data.date, 
+                    participants: participantsToPersist, 
+                    wikilocUrl: data.wikilocUrl,
+                    ownerUserId: existing?.ownerUserId ?? user.id,
+                  }
                 : c
             )
           };
@@ -1135,6 +1395,7 @@ export default function App() {
             id: Math.random().toString(36).substr(2, 9),
             date: data.date,
             participants: participantsToPersist,
+            ownerUserId: user.id,
             wikilocUrl: data.wikilocUrl
           };
           return { 
@@ -1417,11 +1678,18 @@ export default function App() {
 
   const participantSuggestions: string[] = Array.from(
     new Set<string>(
-      mountainRanges.flatMap(range =>
-        range.peaks.flatMap(peak =>
-          peak.completions.flatMap(completion => completion.participants),
+      [
+        ...registeredUsers.map(registeredUser => registeredUser.display_name),
+        ...mountainRanges.flatMap(range =>
+          range.peaks.flatMap(peak =>
+            peak.completions.flatMap(completion =>
+              completion.participants.map(participant =>
+                resolveParticipantDisplayName(participant, participantNameMap),
+              ),
+            ),
+          ),
         ),
-      ),
+      ],
     ),
   ).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 
@@ -1452,7 +1720,14 @@ export default function App() {
   const renderScreen = () => {
     switch (currentScreen) {
       case 'HOME':
-        return <HomeScreen mountainRanges={mountainRanges} onViewAllSerras={() => setCurrentScreen('SERRAS')} />;
+        return (
+          <HomeScreen
+            user={user}
+            mountainRanges={mountainRanges}
+            onViewAllSerras={() => setCurrentScreen('SERRAS')}
+            onOpenProfile={() => setCurrentScreen('PERFIL')}
+          />
+        );
       case 'SERRAS':
         return (
           <SerrasScreen 
@@ -1471,25 +1746,42 @@ export default function App() {
           />
         );
       case 'RANKING':
-        return <RankingScreen user={user} mountainRanges={mountainRanges} onBack={() => setCurrentScreen('HOME')} />;
+        return (
+          <RankingScreen
+            user={user}
+            mountainRanges={mountainRanges}
+            participantNameMap={participantNameMap}
+            participantAvatarMap={participantAvatarMap}
+            onOpenProfile={() => setCurrentScreen('PERFIL')}
+            onBack={() => setCurrentScreen('HOME')}
+          />
+        );
       case 'PERFIL':
         return (
           <PerfilScreen
             user={user}
             mountainRanges={mountainRanges}
             isCloudEnabled={cloudSyncEnabled}
+            onUpdateProfile={handleProfileUpdate}
             onExportBackup={exportBackupToFile}
             onImportBackup={importBackupFromText}
             onLogout={handleLogout}
           />
         );
       default:
-        return <HomeScreen mountainRanges={mountainRanges} onViewAllSerras={() => setCurrentScreen('SERRAS')} />;
+        return (
+          <HomeScreen
+            user={user}
+            mountainRanges={mountainRanges}
+            onViewAllSerras={() => setCurrentScreen('SERRAS')}
+            onOpenProfile={() => setCurrentScreen('PERFIL')}
+          />
+        );
     }
   };
 
   return (
-    <div className="min-h-screen bg-background-dark text-slate-100 font-sans max-w-md mx-auto relative overflow-hidden shadow-2xl">
+    <div className="min-h-screen bg-background-dark text-slate-100 font-sans w-full max-w-md mx-auto relative overflow-x-hidden shadow-2xl">
       {/* Main Content */}
       <main className="pb-24">
         <AnimatePresence mode="wait">
@@ -1546,6 +1838,8 @@ export default function App() {
             peak={isCompletingPeak.peak}
             initialData={isCompletingPeak.initialData}
             participantSuggestions={participantSuggestions}
+            participantNameMap={participantNameMap}
+            isLoadingParticipantSuggestions={isLoadingRegisteredUsers}
             currentUser={user}
             isAdmin={isAdminUser}
             onClose={() => setIsCompletingPeak(null)}
@@ -1605,6 +1899,8 @@ function CompletionModal({
   peak,
   initialData,
   participantSuggestions,
+  participantNameMap,
+  isLoadingParticipantSuggestions,
   currentUser,
   isAdmin,
   onClose,
@@ -1613,6 +1909,8 @@ function CompletionModal({
   peak: Peak, 
   initialData?: { date: string, participants: string[], wikilocUrl?: string },
   participantSuggestions: string[],
+  participantNameMap: Map<string, string>,
+  isLoadingParticipantSuggestions: boolean,
   currentUser: User,
   isAdmin: boolean,
   onClose: () => void, 
@@ -1630,28 +1928,32 @@ function CompletionModal({
 
   const [date, setDate] = useState(initialData ? parseBRDateToISO(initialData.date) : new Date().toISOString().split('T')[0]);
   const [participantInput, setParticipantInput] = useState('');
+  const [participantError, setParticipantError] = useState('');
   const [participants, setParticipants] = useState<string[]>(
-    isAdmin
-      ? (initialData?.participants || [])
-      : [currentUser.name],
+    initialData?.participants && initialData.participants.length > 0
+      ? sanitizeParticipants(initialData.participants, participantNameMap)
+      : [resolveParticipantDisplayName(currentUser.name, participantNameMap) || currentUser.name],
   );
   const [wikilocUrl, setWikilocUrl] = useState(initialData?.wikilocUrl || '');
 
   const addParticipantByName = (name: string) => {
-    const trimmedName = name.trim();
-    if (!trimmedName) {
+    const resolvedName = resolveParticipantDisplayName(name, participantNameMap);
+    if (!resolvedName || !participantNameMap.has(normalizeText(name))) {
+      setParticipantError('Usuário não encontrado na plataforma.');
       return;
     }
 
     const alreadyAdded = participants.some(
-      participant => normalizeText(participant) === normalizeText(trimmedName),
+      participant => normalizeText(participant) === normalizeText(resolvedName),
     );
     if (alreadyAdded) {
+      setParticipantError('Esse usuário já foi adicionado.');
       return;
     }
 
-    setParticipants([...participants, trimmedName]);
+    setParticipants([...participants, resolvedName]);
     setParticipantInput('');
+    setParticipantError('');
   };
 
   const addParticipant = () => {
@@ -1659,6 +1961,10 @@ function CompletionModal({
   };
 
   const removeParticipant = (name: string) => {
+    // Usuário sempre permanece como participante da própria conquista (para manter a autoria).
+    if (!isAdmin && normalizeText(name) === normalizeText(resolveParticipantDisplayName(currentUser.name, participantNameMap))) {
+      return;
+    }
     setParticipants(participants.filter(p => p !== name));
   };
 
@@ -1712,9 +2018,14 @@ function CompletionModal({
               <div className="flex gap-2">
                 <input 
                   type="text" 
-                  placeholder="Nome do trilheiro"
+                  placeholder="Buscar usuário cadastrado"
                   value={participantInput}
-                  onChange={(e) => setParticipantInput(e.target.value)}
+                  onChange={(e) => {
+                    setParticipantInput(e.target.value);
+                    if (participantError) {
+                      setParticipantError('');
+                    }
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
@@ -1725,11 +2036,21 @@ function CompletionModal({
                 />
                 <button 
                   onClick={addParticipant}
+                  disabled={!participantNameMap.has(normalizeText(participantInput))}
                   className="size-12 bg-primary/10 text-primary border border-primary/20 rounded-2xl flex items-center justify-center"
                 >
                   <Plus size={20} />
                 </button>
               </div>
+              {isLoadingParticipantSuggestions && (
+                <p className="text-[11px] text-slate-400">Carregando usuários da plataforma...</p>
+              )}
+              {!isLoadingParticipantSuggestions && participantSuggestions.length === 0 && (
+                <p className="text-[11px] text-slate-400">Nenhum usuário da plataforma disponível para seleção.</p>
+              )}
+              {participantError && (
+                <p className="text-[11px] text-red-300">{participantError}</p>
+              )}
               {filteredSuggestions.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {filteredSuggestions.map(name => (
@@ -1785,7 +2106,9 @@ function CompletionModal({
           <button 
             onClick={() => onSave({
               date: formatISOToBRDate(date),
-              participants: isAdmin ? participants : [currentUser.name],
+              participants: isAdmin
+                ? participants
+                : [resolveParticipantDisplayName(currentUser.name, participantNameMap) || currentUser.name],
               wikilocUrl,
             })}
             className="flex-1 h-12 rounded-2xl bg-primary text-background-dark font-bold text-sm"
@@ -1847,6 +2170,7 @@ function LoginScreen({
       }
 
       const requiresPasswordChange =
+        mode === 'signin' &&
         password === TEMP_PASSWORD &&
         normalizeText(normalizedEmail) !== normalizeText(ADMIN_EMAIL);
 
@@ -2120,6 +2444,7 @@ function PerfilScreen({
   user,
   mountainRanges,
   isCloudEnabled,
+  onUpdateProfile,
   onExportBackup,
   onImportBackup,
   onLogout,
@@ -2127,14 +2452,21 @@ function PerfilScreen({
   user: User,
   mountainRanges: MountainRange[],
   isCloudEnabled: boolean,
+  onUpdateProfile: (updates: { username: string; avatar: string }) => void,
   onExportBackup: () => void,
   onImportBackup: (backupText: string) => { success: boolean; message: string },
   onLogout: () => void
 }) {
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const [isImportingBackup, setIsImportingBackup] = useState(false);
   const [registeredUsers, setRegisteredUsers] = useState<CloudAppUser[]>([]);
   const [isLoadingRegisteredUsers, setIsLoadingRegisteredUsers] = useState(false);
+  const [draftUsername, setDraftUsername] = useState(user.username);
+  const [draftAvatar, setDraftAvatar] = useState(user.avatar);
+  const [profileError, setProfileError] = useState('');
+  const [profileSuccessMessage, setProfileSuccessMessage] = useState('');
+  const [isProfileEditorOpen, setIsProfileEditorOpen] = useState(false);
   const userKeys = Array.from(
     new Set([normalizeText(user.name), normalizeText(user.username)].filter(Boolean)),
   );
@@ -2203,6 +2535,59 @@ function PerfilScreen({
   };
 
   useEffect(() => {
+    setDraftUsername(user.username);
+    setDraftAvatar(user.avatar);
+  }, [user.avatar, user.username]);
+
+  const handleAvatarFileChange: React.ChangeEventHandler<HTMLInputElement> = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      setProfileError('Selecione um arquivo de imagem válido.');
+      return;
+    }
+
+    try {
+      const optimizedAvatar = await buildOptimizedAvatarDataUrl(file);
+      setDraftAvatar(optimizedAvatar);
+      setProfileError('');
+      setProfileSuccessMessage('');
+    } catch {
+      setProfileError('Não foi possível processar a imagem.');
+      setProfileSuccessMessage('');
+    }
+
+    event.target.value = '';
+  };
+
+  const handleSaveProfile = () => {
+    const sanitized = sanitizeUsername(draftUsername);
+    if (!sanitized) {
+      setProfileError('Informe um @ válido usando letras, números, ponto, hífen ou underscore.');
+      setProfileSuccessMessage('');
+      return;
+    }
+
+    if (!draftAvatar.trim()) {
+      setProfileError('Adicione uma foto ou informe a URL da imagem.');
+      setProfileSuccessMessage('');
+      return;
+    }
+
+    onUpdateProfile({
+      username: sanitized,
+      avatar: draftAvatar.trim(),
+    });
+    setDraftUsername(sanitized);
+    setProfileError('');
+    setProfileSuccessMessage('Perfil atualizado.');
+    setIsProfileEditorOpen(false);
+  };
+
+  useEffect(() => {
     if (!isCloudEnabled || user.role !== 'ADMIN') {
       return;
     }
@@ -2229,29 +2614,122 @@ function PerfilScreen({
     <div className="p-6 pt-8 space-y-8">
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Meu Perfil</h1>
-        <button className="bg-primary/10 p-2 rounded-xl text-primary border border-primary/20">
-          <Settings size={20} />
-        </button>
       </header>
 
       <div className="flex flex-col items-center space-y-4">
-        <div className="size-32 rounded-full border-4 border-primary p-1">
-          <img 
-            src={user.avatar} 
-            alt={user.name} 
-            className="w-full h-full object-cover rounded-full"
-            referrerPolicy="no-referrer"
-          />
+        <div className="relative">
+          <div className="size-32 rounded-full border-4 border-primary p-1">
+            <img 
+              src={draftAvatar || user.avatar} 
+              alt={user.name} 
+              className="w-full h-full object-cover rounded-full"
+              referrerPolicy="no-referrer"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsProfileEditorOpen(true)}
+            className="absolute bottom-1 right-1 size-10 rounded-full bg-primary text-background-dark flex items-center justify-center border-2 border-background-dark"
+            aria-label="Editar foto"
+            title="Editar foto"
+          >
+            <Pencil size={16} />
+          </button>
         </div>
         <div className="text-center">
           <h2 className="text-xl font-bold">{user.name}</h2>
-          <p className="text-slate-400 text-sm">@{user.username}</p>
+          <button
+            type="button"
+            onClick={() => setIsProfileEditorOpen(true)}
+            className="inline-flex items-center gap-2 text-slate-400 text-sm hover:text-primary transition-colors"
+          >
+            <span>@{user.username}</span>
+            <Pencil size={14} />
+          </button>
           <div className="mt-2 inline-flex px-3 py-1 bg-primary/10 text-primary text-[10px] font-bold rounded-full border border-primary/20 uppercase tracking-widest">
             {user.role}
           </div>
         </div>
       </div>
 
+      {isProfileEditorOpen && (
+        <div className="p-4 rounded-2xl border border-white/10 bg-white/5 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Perfil Publico</h3>
+            <button
+              type="button"
+              onClick={() => {
+                setDraftUsername(user.username);
+                setDraftAvatar(user.avatar);
+                setProfileError('');
+                setProfileSuccessMessage('');
+                setIsProfileEditorOpen(false);
+              }}
+              className="text-slate-400 hover:text-white transition-colors"
+              aria-label="Fechar edicao de perfil"
+              title="Fechar"
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Foto</label>
+            <input
+              type="url"
+              value={draftAvatar}
+              onChange={(e) => {
+                setDraftAvatar(e.target.value);
+                setProfileError('');
+                setProfileSuccessMessage('');
+              }}
+              placeholder="https://..."
+              className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-sm focus:outline-none focus:border-primary transition-all"
+            />
+            <button
+              type="button"
+              onClick={() => avatarInputRef.current?.click()}
+              className="w-full h-11 rounded-xl border border-primary/20 bg-primary/10 text-primary font-bold text-sm"
+            >
+              Enviar foto do aparelho
+            </button>
+            <input
+              ref={avatarInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleAvatarFileChange}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">@username</label>
+            <input
+              type="text"
+              value={draftUsername}
+              onChange={(e) => {
+                setDraftUsername(e.target.value);
+                setProfileError('');
+                setProfileSuccessMessage('');
+              }}
+              placeholder="seu.username"
+              className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-sm focus:outline-none focus:border-primary transition-all"
+            />
+            <p className="text-[11px] text-slate-400">Permitido: letras, numeros, ponto, hifen e underscore.</p>
+          </div>
+          {profileError && (
+            <p className="text-xs text-red-300">{profileError}</p>
+          )}
+          {profileSuccessMessage && (
+            <p className="text-xs text-emerald-300">{profileSuccessMessage}</p>
+          )}
+          <button
+            type="button"
+            onClick={handleSaveProfile}
+            className="w-full h-11 rounded-xl border border-primary/20 bg-primary text-background-dark font-bold text-sm"
+          >
+            Salvar perfil
+          </button>
+        </div>
+      )}
       <div className="space-y-4">
         <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Estatísticas do Montanhista</h3>
         <div className="p-4 rounded-2xl border border-white/10 bg-white/5">
@@ -2634,7 +3112,17 @@ function PeakFormModal({
   );
 }
 
-function HomeScreen({ mountainRanges, onViewAllSerras }: { mountainRanges: MountainRange[], onViewAllSerras: () => void }) {
+function HomeScreen({
+  user,
+  mountainRanges,
+  onViewAllSerras,
+  onOpenProfile,
+}: {
+  user: User,
+  mountainRanges: MountainRange[],
+  onViewAllSerras: () => void,
+  onOpenProfile: () => void,
+}) {
   const rangePicoStats = mountainRanges.map(range => {
     const peaks = Array.isArray(range.peaks) ? range.peaks : [];
     const picoPeaks = peaks.filter(peak => resolvePeakLocalType(peak) === 'pico');
@@ -2702,18 +3190,24 @@ function HomeScreen({ mountainRanges, onViewAllSerras }: { mountainRanges: Mount
         <div className="flex items-center gap-3">
           <div className="size-12 rounded-full border-2 border-primary overflow-hidden p-0.5">
             <img 
-              src="https://picsum.photos/seed/hiker/200/200" 
-              alt="Avatar" 
+              src={user.avatar}
+              alt={user.name}
               className="w-full h-full object-cover rounded-full"
               referrerPolicy="no-referrer"
             />
           </div>
           <div>
             <p className="text-[10px] font-bold text-primary/80 uppercase tracking-widest">Bem-vindo de volta,</p>
-            <h1 className="text-xl font-bold leading-tight">Olá, Trilheiro!</h1>
+            <h1 className="text-xl font-bold leading-tight">Olá, {user.name}!</h1>
           </div>
         </div>
-        <button className="bg-primary/10 p-2 rounded-xl text-primary border border-primary/20">
+        <button
+          type="button"
+          onClick={onOpenProfile}
+          className="bg-primary/10 p-2 rounded-xl text-primary border border-primary/20"
+          aria-label="Abrir perfil"
+          title="Abrir perfil"
+        >
           <Bell size={20} />
         </button>
       </header>
@@ -3022,9 +3516,7 @@ function MountainRangeAccordion({
   canManageCatalog: boolean,
   canDeleteCompletion: (completion: PeakCompletion) => boolean,
 }) {
-  const [isOpen, setIsOpen] = useState(
-    range.id === INITIAL_OPEN_RANGE_ID || range.id === SECONDARY_OPEN_RANGE_ID,
-  );
+  const [isOpen, setIsOpen] = useState(false);
   const percentage = range.totalPeaks > 0 ? (range.completedPeaks / range.totalPeaks) * 100 : 0;
   const peaksByType: Record<LocalType, Peak[]> = {
     pico: [],
@@ -3253,10 +3745,16 @@ function MountainRangeAccordion({
 function RankingScreen({
   user,
   mountainRanges,
+  participantNameMap,
+  participantAvatarMap,
+  onOpenProfile,
   onBack,
 }: {
   user: User,
   mountainRanges: MountainRange[],
+  participantNameMap: Map<string, string>,
+  participantAvatarMap: Map<string, string>,
+  onOpenProfile: () => void,
   onBack: () => void
 }) {
   const parseBRDate = (dateValue: unknown) => {
@@ -3365,7 +3863,7 @@ function RankingScreen({
             : [];
 
           participants.forEach(rawParticipant => {
-            const participantName = String(rawParticipant ?? '').trim();
+            const participantName = resolveParticipantDisplayName(rawParticipant, participantNameMap);
             if (!participantName) {
               return;
             }
@@ -3467,6 +3965,7 @@ function RankingScreen({
     ): RankingLeader => {
       const normalizedName = normalizeText(stats.name);
       const seed = normalizedName || participantKey || `trilheiro-${rank}`;
+      const avatar = participantAvatarMap.get(participantKey) ?? participantAvatarMap.get(normalizedName) ?? `https://picsum.photos/seed/${encodeURIComponent(seed)}/200/200`;
       const picosCount = stats.trails.size;
       const altitudeTotal = Array.from(stats.altitudeLocals.values()).reduce(
         (acc, local) => acc + (typeof local.altitude_metros === 'number' ? local.altitude_metros : 0),
@@ -3483,7 +3982,7 @@ function RankingScreen({
         name: stats.name,
         peaks: picosCount,
         rank,
-        avatar: `https://picsum.photos/seed/${encodeURIComponent(seed)}/200/200`,
+        avatar,
         lastPeak: stats.lastTrail,
         highestAltitude: stats.highestAltitude,
         highestAltitudePeak: stats.highestAltitudePeak,
@@ -3709,7 +4208,13 @@ function RankingScreen({
             <ChevronRight className="rotate-180" />
           </button>
           <h1 className="text-lg font-bold tracking-tight uppercase">{rankingTitle}</h1>
-          <button className="size-10 flex items-center justify-center rounded-full hover:bg-primary/10 transition-colors">
+          <button
+            type="button"
+            onClick={onOpenProfile}
+            className="size-10 flex items-center justify-center rounded-full hover:bg-primary/10 transition-colors"
+            aria-label="Abrir perfil"
+            title="Abrir perfil"
+          >
             <Settings size={20} />
           </button>
         </div>
@@ -3892,7 +4397,7 @@ function PodiumItem({ leader, rank, height, mode, featured = false, isTied = fal
           {rank}
         </div>
       </div>
-      <p className="font-bold text-center text-xs truncate w-full">{leader.name}</p>
+      <p className="font-bold text-center text-xs leading-snug break-words w-full">{leader.name}</p>
       <p className="text-primary text-[10px] font-bold">{scoreLabel}</p>
       {mode === 'SERRAS' && (
         <p className="text-[9px] text-primary font-bold uppercase tracking-tighter">Serras Conquistadas</p>
@@ -3947,10 +4452,10 @@ function LeaderRow({ leader, mode, isTied = false, onViewTrails }: LeaderRowProp
         <img src={leader.avatar} alt={leader.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <p className="font-bold text-sm truncate">{leader.name}</p>
+        <div className="flex flex-col items-start gap-1">
+          <p className="font-bold text-sm leading-snug break-words w-full">{leader.name}</p>
           {isTied && (
-            <span className="text-[8px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border border-primary/30 bg-primary/10 text-primary shrink-0">
+            <span className="text-[8px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border border-primary/30 bg-primary/10 text-primary">
               Empatado
             </span>
           )}
@@ -4106,7 +4611,4 @@ function TrailScoreModal({
     </motion.div>
   );
 }
-
-
-
 

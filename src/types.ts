@@ -32,6 +32,7 @@ export interface PeakCompletion {
   id: string;
   date: string;
   participants: string[];
+  ownerUserId?: string | null;
   wikilocUrl?: string;
 }
 
