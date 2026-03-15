@@ -127,7 +127,9 @@ const buildAuthProfile = (user: SupabaseAuthUser | null | undefined): CloudAuthP
     return null;
   }
 
-  const username = deriveUsernameFromEmail(email);
+  const username =
+    getMetadataString(user, 'username') ??
+    deriveUsernameFromEmail(email);
   const displayName =
     getMetadataString(user, 'display_name') ??
     getMetadataString(user, 'name') ??
@@ -636,6 +638,63 @@ export const updateSupabaseAuthPassword = async (
     return { ok: true };
   } catch {
     return { ok: false, message: 'Falha de conexão ao atualizar a senha.' };
+  }
+};
+
+export const updateSupabaseAuthProfile = async (params: {
+  username?: string;
+  displayName?: string;
+  avatarUrl?: string;
+}): Promise<{ ok: true; profile: CloudAuthProfile } | { ok: false; message: string }> => {
+  if (!hasCloudConfig) {
+    return { ok: false, message: 'Supabase não está configurado.' };
+  }
+
+  const session = readStoredAuthSession();
+  const accessToken = session?.access_token;
+  if (!accessToken) {
+    return { ok: false, message: 'Sessão inválida. Faça login novamente.' };
+  }
+
+  try {
+    const response = await fetchWithTimeout(`${SUPABASE_URL}/auth/v1/user`, {
+      method: 'PUT',
+      headers: buildAuthBearerHeaders(accessToken),
+      body: JSON.stringify({
+        data: {
+          ...(typeof params.username === 'string' ? { username: params.username } : {}),
+          ...(typeof params.displayName === 'string' ? { display_name: params.displayName } : {}),
+          ...(typeof params.avatarUrl === 'string' ? { avatar_url: params.avatarUrl } : {}),
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        message: await parseAuthResponseError(response, 'Não foi possível atualizar o perfil.'),
+      };
+    }
+
+    const payload = (await response.json()) as unknown;
+    const updatedUser = toSupabaseAuthUser(payload);
+    const profile = buildAuthProfile(updatedUser);
+    if (!updatedUser || !profile) {
+      return { ok: false, message: 'Perfil do usuário inválido.' };
+    }
+
+    persistAuthSession({
+      ...(session ?? {}),
+      access_token: accessToken,
+      refresh_token: session?.refresh_token,
+      expires_at: session?.expires_at,
+      expires_in: session?.expires_in,
+      user: updatedUser,
+    });
+
+    return { ok: true, profile };
+  } catch {
+    return { ok: false, message: 'Falha de conexão ao atualizar o perfil.' };
   }
 };
 

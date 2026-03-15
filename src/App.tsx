@@ -58,6 +58,7 @@ import {
   signInWithSupabaseAuth,
   signOutSupabaseAuth,
   signUpWithSupabaseAuth,
+  updateSupabaseAuthProfile,
   updateSupabaseAuthPassword,
   upsertCloudUser,
 } from './cloudSync';
@@ -1256,7 +1257,7 @@ export default function App() {
     setCurrentScreen('HOME');
   };
 
-  const handleProfileUpdate = (updates: { username: string; avatar: string }) => {
+  const handleProfileUpdate = async (updates: { username: string; avatar: string }) => {
     if (!user) {
       return;
     }
@@ -1270,6 +1271,23 @@ export default function App() {
     };
 
     setUser(nextUser);
+
+    if (cloudSyncEnabled) {
+      const authProfileResult = await updateSupabaseAuthProfile({
+        username: nextUser.username,
+        displayName: nextUser.name,
+        avatarUrl: nextUser.avatar,
+      });
+
+      if (authProfileResult.ok) {
+        setUser({
+          ...nextUser,
+          name: authProfileResult.profile.displayName,
+          username: authProfileResult.profile.username,
+          avatar: authProfileResult.profile.avatarUrl,
+        });
+      }
+    }
 
     if (cloudSyncEnabled && nextUser.email) {
       void upsertCloudUser({
@@ -1783,7 +1801,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-background-dark text-slate-100 font-sans w-full max-w-md mx-auto relative overflow-x-hidden shadow-2xl">
       {/* Main Content */}
-      <main className="pb-24">
+      <main className="pb-20">
         <AnimatePresence mode="wait">
           <motion.div
             key={currentScreen}
@@ -1859,7 +1877,7 @@ export default function App() {
       )}
 
       {/* Bottom Navigation */}
-      <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-black/80 backdrop-blur-xl border-t border-white/5 z-40 px-6 pb-8 pt-3">
+      <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-black/80 backdrop-blur-xl border-t border-white/5 z-40 px-6 pb-4 pt-2">
         <div className="flex justify-between items-center">
           <NavButton 
             active={currentScreen === 'HOME'} 
@@ -1885,10 +1903,6 @@ export default function App() {
             icon={<UserIcon size={24} />} 
             label="PERFIL" 
           />
-        </div>
-        {/* iOS style home indicator */}
-        <div className="mt-4 flex justify-center">
-          <div className="w-32 h-1 bg-white/20 rounded-full" />
         </div>
       </nav>
     </div>
