@@ -647,13 +647,23 @@ export const updateSupabaseAuthPassword = async (
   }
 
   try {
-    const response = await fetchWithTimeout(`${SUPABASE_URL}/auth/v1/user`, {
+    const requestInit: RequestInit = {
       method: 'PUT',
-      headers: buildAuthBearerHeaders(accessToken),
+      headers: {
+        ...buildAuthBearerHeaders(accessToken),
+        Accept: 'application/json',
+      },
       body: JSON.stringify({
         password: newPassword,
       }),
-    });
+    };
+
+    let response: Response;
+    try {
+      response = await fetchWithTimeout(`${SUPABASE_URL}/auth/v1/user`, requestInit);
+    } catch {
+      response = await fetch(`${SUPABASE_URL}/auth/v1/user`, requestInit);
+    }
 
     if (!response.ok) {
       return {
@@ -664,7 +674,7 @@ export const updateSupabaseAuthPassword = async (
 
     return { ok: true };
   } catch {
-    return { ok: false, message: 'Falha de conexão ao atualizar a senha.' };
+    return { ok: false, message: 'Falha de conexão ao atualizar a senha. Se persistir, saia e entre novamente antes de tentar de novo.' };
   }
 };
 
@@ -838,15 +848,24 @@ export const upsertCloudCompletion = async (payload: {
   date: string;
   participants: string[];
   wikilocUrl?: string;
-}): Promise<{
-  id: string;
-  date: string;
-  participants: string[];
-  ownerUserId?: string | null;
-  wikilocUrl?: string;
-} | null> => {
+}): Promise<
+  | {
+      ok: true;
+      completion: {
+        id: string;
+        date: string;
+        participants: string[];
+        ownerUserId?: string | null;
+        wikilocUrl?: string;
+      };
+    }
+  | {
+      ok: false;
+      message: string;
+    }
+> => {
   if (!hasCloudConfig) {
-    return null;
+    return { ok: false, message: 'Supabase não está configurado.' };
   }
 
   try {
@@ -863,25 +882,31 @@ export const upsertCloudCompletion = async (payload: {
     });
 
     if (!response.ok) {
-      return null;
+      return {
+        ok: false,
+        message: await parseAuthResponseError(response, 'Não foi possível salvar a conquista.'),
+      };
     }
 
     const record = asRecord(await response.json());
     if (!record || typeof record.id !== 'string' || typeof record.date !== 'string') {
-      return null;
+      return { ok: false, message: 'Resposta inválida ao salvar a conquista.' };
     }
 
     return {
-      id: record.id,
-      date: record.date,
-      participants: Array.isArray(record.participants)
-        ? record.participants.filter((value): value is string => typeof value === 'string')
-        : [],
-      ownerUserId: typeof record.ownerUserId === 'string' ? record.ownerUserId : null,
-      wikilocUrl: typeof record.wikilocUrl === 'string' ? record.wikilocUrl : undefined,
+      ok: true,
+      completion: {
+        id: record.id,
+        date: record.date,
+        participants: Array.isArray(record.participants)
+          ? record.participants.filter((value): value is string => typeof value === 'string')
+          : [],
+        ownerUserId: typeof record.ownerUserId === 'string' ? record.ownerUserId : null,
+        wikilocUrl: typeof record.wikilocUrl === 'string' ? record.wikilocUrl : undefined,
+      },
     };
   } catch {
-    return null;
+    return { ok: false, message: 'Falha de conexão ao salvar a conquista.' };
   }
 };
 

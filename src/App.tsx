@@ -1429,9 +1429,13 @@ export default function App() {
           wikilocUrl: data.wikilocUrl,
         });
 
-        if (!savedCompletion) {
+        if (!savedCompletion.ok) {
+          const message = 'message' in savedCompletion ? savedCompletion.message : 'Não foi possível salvar a conquista.';
+          window.alert(message);
           return;
         }
+
+        const completion = savedCompletion.completion;
 
         setMountainRanges(prev => withRangeStats(prev.map(range => {
           if (range.id !== rangeId) return range;
@@ -1446,11 +1450,11 @@ export default function App() {
                   c.id === completionId
                     ? {
                         ...c,
-                        id: savedCompletion.id,
-                        date: savedCompletion.date,
-                        participants: savedCompletion.participants,
-                        wikilocUrl: savedCompletion.wikilocUrl,
-                        ownerUserId: savedCompletion.ownerUserId ?? user.id,
+                        id: completion.id,
+                        date: completion.date,
+                        participants: completion.participants,
+                        wikilocUrl: completion.wikilocUrl,
+                        ownerUserId: completion.ownerUserId ?? user.id,
                       }
                     : c
                 ),
@@ -1462,11 +1466,11 @@ export default function App() {
               completions: [
                 ...peak.completions,
                 {
-                  id: savedCompletion.id,
-                  date: savedCompletion.date,
-                  participants: savedCompletion.participants,
-                  ownerUserId: savedCompletion.ownerUserId ?? user.id,
-                  wikilocUrl: savedCompletion.wikilocUrl,
+                  id: completion.id,
+                  date: completion.date,
+                  participants: completion.participants,
+                  ownerUserId: completion.ownerUserId ?? user.id,
+                  wikilocUrl: completion.wikilocUrl,
                 },
               ],
             };
@@ -1477,6 +1481,7 @@ export default function App() {
             peaks: newPeaks
           };
         })));
+        setIsCompletingPeak(null);
       })();
       return;
     }
