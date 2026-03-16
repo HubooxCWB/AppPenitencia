@@ -404,35 +404,43 @@ const refreshAuthSession = async (refreshToken: string): Promise<SupabaseAuthSes
   };
 };
 
+const getValidStoredAuthSession = async (): Promise<SupabaseAuthSession | null> => {
+  const storedSession = readStoredAuthSession();
+  if (!storedSession?.access_token) {
+    return null;
+  }
+
+  if (!isSessionExpired(storedSession)) {
+    return storedSession;
+  }
+
+  if (!storedSession.refresh_token) {
+    clearStoredAuthSession();
+    return null;
+  }
+
+  const refreshedSession = await refreshAuthSession(storedSession.refresh_token);
+  if (!refreshedSession?.access_token) {
+    clearStoredAuthSession();
+    return null;
+  }
+
+  persistAuthSession(refreshedSession);
+  return refreshedSession;
+};
+
 export const restoreSupabaseAuthProfile = async (): Promise<CloudAuthProfile | null> => {
   if (!hasCloudConfig) {
     return null;
   }
 
   try {
-    const storedSession = readStoredAuthSession();
+    const storedSession = await getValidStoredAuthSession();
     if (!storedSession?.access_token) {
       return null;
     }
 
-    let activeSession = storedSession;
-    if (isSessionExpired(activeSession)) {
-      if (!activeSession.refresh_token) {
-        clearStoredAuthSession();
-        return null;
-      }
-
-      const refreshedSession = await refreshAuthSession(activeSession.refresh_token);
-      if (!refreshedSession?.access_token) {
-        clearStoredAuthSession();
-        return null;
-      }
-
-      activeSession = refreshedSession;
-      persistAuthSession(activeSession);
-    }
-
-    const authUser = await fetchAuthUser(activeSession.access_token);
+    const authUser = await fetchAuthUser(storedSession.access_token);
     if (!authUser) {
       clearStoredAuthSession();
       return null;
@@ -445,7 +453,7 @@ export const restoreSupabaseAuthProfile = async (): Promise<CloudAuthProfile | n
     }
 
     const mergedSession: SupabaseAuthSession = {
-      ...activeSession,
+      ...storedSession,
       user: authUser,
     };
     persistAuthSession(mergedSession);
@@ -632,7 +640,8 @@ export const updateSupabaseAuthPassword = async (
     return { ok: false, message: 'Supabase não está configurado.' };
   }
 
-  const accessToken = readStoredAuthSession()?.access_token;
+  const session = await getValidStoredAuthSession();
+  const accessToken = session?.access_token;
   if (!accessToken) {
     return { ok: false, message: 'Sessão inválida. Faça login novamente.' };
   }
@@ -668,7 +677,7 @@ export const updateSupabaseAuthProfile = async (params: {
     return { ok: false, message: 'Supabase não está configurado.' };
   }
 
-  const session = readStoredAuthSession();
+  const session = await getValidStoredAuthSession();
   const accessToken = session?.access_token;
   if (!accessToken) {
     return { ok: false, message: 'Sessão inválida. Faça login novamente.' };

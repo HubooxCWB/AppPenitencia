@@ -2580,6 +2580,7 @@ function PerfilScreen({
   const [passwordError, setPasswordError] = useState('');
   const [passwordSuccessMessage, setPasswordSuccessMessage] = useState('');
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
+  const [isPasswordSectionOpen, setIsPasswordSectionOpen] = useState(false);
   const userKeys = Array.from(
     new Set([normalizeText(user.name), normalizeText(user.username)].filter(Boolean)),
   );
@@ -2730,6 +2731,7 @@ function PerfilScreen({
       setNewPassword('');
       setConfirmPassword('');
       setPasswordSuccessMessage('Senha atualizada com sucesso.');
+      setIsPasswordSectionOpen(false);
     } finally {
       setIsUpdatingPassword(false);
     }
@@ -2879,79 +2881,94 @@ function PerfilScreen({
         </div>
       )}
       <div className="p-4 rounded-2xl border border-white/10 bg-white/5 space-y-3">
-        <div className="space-y-1">
-          <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Segurança</h3>
-          <p className="text-[11px] text-slate-400">Atualize sua senha quando quiser. A sessão atual já autoriza a troca.</p>
-        </div>
-        <div className="space-y-1.5">
-          <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Nova senha</label>
-          <div className="relative">
-            <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={18} />
-            <input
-              type={showNewPassword ? 'text' : 'password'}
-              autoComplete="new-password"
-              value={newPassword}
-              onChange={(event) => {
-                setNewPassword(event.target.value);
-                setPasswordError('');
-                setPasswordSuccessMessage('');
-              }}
-              placeholder="Digite a nova senha"
-              className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all"
-            />
-            <button
-              type="button"
-              onClick={() => setShowNewPassword(prev => !prev)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-primary/60 hover:text-primary transition-colors p-1"
-              aria-label={showNewPassword ? 'Ocultar senha' : 'Mostrar senha'}
-              title={showNewPassword ? 'Ocultar senha' : 'Mostrar senha'}
-            >
-              {showNewPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-            </button>
-          </div>
-        </div>
-        <div className="space-y-1.5">
-          <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Confirmar senha</label>
-          <div className="relative">
-            <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={18} />
-            <input
-              type={showConfirmPassword ? 'text' : 'password'}
-              autoComplete="new-password"
-              value={confirmPassword}
-              onChange={(event) => {
-                setConfirmPassword(event.target.value);
-                setPasswordError('');
-                setPasswordSuccessMessage('');
-              }}
-              placeholder="Confirme a nova senha"
-              className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all"
-            />
-            <button
-              type="button"
-              onClick={() => setShowConfirmPassword(prev => !prev)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-primary/60 hover:text-primary transition-colors p-1"
-              aria-label={showConfirmPassword ? 'Ocultar senha' : 'Mostrar senha'}
-              title={showConfirmPassword ? 'Ocultar senha' : 'Mostrar senha'}
-            >
-              {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-            </button>
-          </div>
-          <p className="text-[11px] text-slate-400">Recomendado: usar pelo menos 8 caracteres.</p>
-        </div>
-        {passwordError && (
-          <p className="text-xs text-red-300">{passwordError}</p>
-        )}
-        {passwordSuccessMessage && (
-          <p className="text-xs text-emerald-300">{passwordSuccessMessage}</p>
-        )}
         <button
           type="button"
-          onClick={() => void handleChangePassword()}
-          disabled={isUpdatingPassword}
-          className="w-full h-11 rounded-xl border border-primary/20 bg-primary text-background-dark font-bold text-sm disabled:opacity-50"
+          onClick={() => setIsPasswordSectionOpen(prev => !prev)}
+          className="w-full flex items-center justify-between gap-3 text-left"
+          aria-expanded={isPasswordSectionOpen}
         >
-          {isUpdatingPassword ? 'Atualizando...' : 'Atualizar senha'}
+          <div className="space-y-1">
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Segurança</h3>
+            <p className="text-[11px] text-slate-400">Atualize sua senha quando quiser.</p>
+          </div>
+          <ChevronDown
+            size={18}
+            className={`text-primary transition-transform ${isPasswordSectionOpen ? 'rotate-180' : ''}`}
+          />
         </button>
+        {isPasswordSectionOpen && (
+          <div className="space-y-3 pt-2 border-t border-white/10">
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Nova senha</label>
+              <div className="relative">
+                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={18} />
+                <input
+                  type={showNewPassword ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(event) => {
+                    setNewPassword(event.target.value);
+                    setPasswordError('');
+                    setPasswordSuccessMessage('');
+                  }}
+                  placeholder="Digite a nova senha"
+                  className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNewPassword(prev => !prev)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-primary/60 hover:text-primary transition-colors p-1"
+                  aria-label={showNewPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                  title={showNewPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                >
+                  {showNewPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Confirmar senha</label>
+              <div className="relative">
+                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={18} />
+                <input
+                  type={showConfirmPassword ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(event) => {
+                    setConfirmPassword(event.target.value);
+                    setPasswordError('');
+                    setPasswordSuccessMessage('');
+                  }}
+                  placeholder="Confirme a nova senha"
+                  className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmPassword(prev => !prev)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-primary/60 hover:text-primary transition-colors p-1"
+                  aria-label={showConfirmPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                  title={showConfirmPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                >
+                  {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-400">Recomendado: usar pelo menos 8 caracteres.</p>
+            </div>
+            {passwordError && (
+              <p className="text-xs text-red-300">{passwordError}</p>
+            )}
+            {passwordSuccessMessage && (
+              <p className="text-xs text-emerald-300">{passwordSuccessMessage}</p>
+            )}
+            <button
+              type="button"
+              onClick={() => void handleChangePassword()}
+              disabled={isUpdatingPassword}
+              className="w-full h-11 rounded-xl border border-primary/20 bg-primary text-background-dark font-bold text-sm disabled:opacity-50"
+            >
+              {isUpdatingPassword ? 'Atualizando...' : 'Atualizar senha'}
+            </button>
+          </div>
+        )}
       </div>
       <div className="space-y-4">
         <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Estatísticas do Montanhista</h3>
@@ -3025,38 +3042,40 @@ function PerfilScreen({
         </div>
       </div>
 
-      <div className="space-y-4">
-        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Backup</h3>
-        <div className="p-4 rounded-2xl border border-white/10 bg-white/5 space-y-3">
-          <button
-            type="button"
-            onClick={onExportBackup}
-            className="w-full h-11 rounded-xl border border-primary/20 bg-primary/10 text-primary font-bold text-sm flex items-center justify-center gap-2 hover:bg-primary/20 transition-colors"
-          >
-            <Download size={16} />
-            Exportar Backup
-          </button>
-          <button
-            type="button"
-            onClick={() => importInputRef.current?.click()}
-            disabled={isImportingBackup}
-            className="w-full h-11 rounded-xl border border-emerald-400/25 bg-emerald-500/10 text-emerald-300 font-bold text-sm flex items-center justify-center gap-2 hover:bg-emerald-500/20 transition-colors disabled:opacity-60"
-          >
-            <Upload size={16} />
-            {isImportingBackup ? 'Importando...' : 'Importar Backup'}
-          </button>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept="application/json,.json"
-            className="hidden"
-            onChange={handleImportBackupFile}
-          />
-          <p className="text-[11px] text-slate-400">
-            Exporta e restaura dados completos (locais, checks, participantes e datas).
-          </p>
+      {user.role === 'ADMIN' && (
+        <div className="space-y-4">
+          <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Backup</h3>
+          <div className="p-4 rounded-2xl border border-white/10 bg-white/5 space-y-3">
+            <button
+              type="button"
+              onClick={onExportBackup}
+              className="w-full h-11 rounded-xl border border-primary/20 bg-primary/10 text-primary font-bold text-sm flex items-center justify-center gap-2 hover:bg-primary/20 transition-colors"
+            >
+              <Download size={16} />
+              Exportar Backup
+            </button>
+            <button
+              type="button"
+              onClick={() => importInputRef.current?.click()}
+              disabled={isImportingBackup}
+              className="w-full h-11 rounded-xl border border-emerald-400/25 bg-emerald-500/10 text-emerald-300 font-bold text-sm flex items-center justify-center gap-2 hover:bg-emerald-500/20 transition-colors disabled:opacity-60"
+            >
+              <Upload size={16} />
+              {isImportingBackup ? 'Importando...' : 'Importar Backup'}
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={handleImportBackupFile}
+            />
+            <p className="text-[11px] text-slate-400">
+              Exporta e restaura dados completos (locais, checks, participantes e datas).
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
       <button 
         onClick={onLogout}
