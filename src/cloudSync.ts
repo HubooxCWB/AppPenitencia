@@ -29,6 +29,13 @@ export interface CloudAppUser {
   created_at?: string;
 }
 
+export interface CloudParticipantUser {
+  username: string;
+  display_name: string;
+  avatar_url?: string | null;
+  created_at?: string;
+}
+
 export interface CloudAuthProfile {
   id: string;
   email: string;
@@ -53,10 +60,6 @@ interface SupabaseAuthSession {
 }
 
 const AUTH_SESSION_STORAGE_KEY = 'penitencia-supabase-auth-session';
-const DEFAULT_ADMIN_USERNAME = 'penitencia';
-const DEFAULT_ADMIN_EMAIL = 'huboox.rec@gmail.com';
-const ADMIN_EMAIL = String(import.meta.env.VITE_ADMIN_EMAIL || DEFAULT_ADMIN_EMAIL).trim().toLowerCase() || DEFAULT_ADMIN_EMAIL;
-const ADMIN_USERNAME = String(import.meta.env.VITE_ADMIN_USERNAME || DEFAULT_ADMIN_USERNAME).trim().toLowerCase() || DEFAULT_ADMIN_USERNAME;
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
@@ -137,10 +140,6 @@ const buildAuthProfile = (user: SupabaseAuthUser | null | undefined): CloudAuthP
   const avatarUrl =
     getMetadataString(user, 'avatar_url') ??
     `https://picsum.photos/seed/${encodeURIComponent(username || 'hiker')}/200/200`;
-  const isAdmin = Boolean(
-    (ADMIN_EMAIL && email === ADMIN_EMAIL) ||
-    username === ADMIN_USERNAME,
-  );
 
   return {
     id: user?.id ?? username,
@@ -148,7 +147,7 @@ const buildAuthProfile = (user: SupabaseAuthUser | null | undefined): CloudAuthP
     username,
     displayName,
     avatarUrl,
-    role: isAdmin ? 'ADMIN' : 'USER',
+    role: 'USER',
   };
 };
 
@@ -335,6 +334,25 @@ export const saveRangesToCloud = async (ranges: MountainRange[]): Promise<void> 
   } catch {
     console.error('[cloudSync] saveRangesToCloud failed: network/timeout');
   }
+};
+
+const normalizeCloudAppUser = (payload: unknown): CloudAppUser | null => {
+  const record = asRecord(payload);
+  if (!record || typeof record.username !== 'string' || typeof record.display_name !== 'string') {
+    return null;
+  }
+
+  return {
+    auth_user_id: typeof record.auth_user_id === 'string' ? record.auth_user_id : null,
+    email: typeof record.email === 'string' ? record.email : null,
+    username: record.username,
+    display_name: record.display_name,
+    role: typeof record.role === 'string' ? record.role : 'USER',
+    avatar_url: typeof record.avatar_url === 'string' ? record.avatar_url : null,
+    is_active: typeof record.is_active === 'boolean' ? record.is_active : undefined,
+    last_login_at: typeof record.last_login_at === 'string' ? record.last_login_at : null,
+    created_at: typeof record.created_at === 'string' ? record.created_at : undefined,
+  };
 };
 
 const fetchAuthUser = async (accessToken: string): Promise<SupabaseAuthUser | null> => {
@@ -704,13 +722,13 @@ export const upsertCloudUser = async (payload: {
   username: string;
   displayName: string;
   avatarUrl?: string;
-}): Promise<void> => {
+}): Promise<CloudAppUser | null> => {
   if (!hasCloudConfig) {
-    return;
+    return null;
   }
 
   try {
-    await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/upsert_app_user`, {
+    const response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/upsert_app_user`, {
       method: 'POST',
       headers: buildRequestHeaders(),
       body: JSON.stringify({
@@ -721,8 +739,14 @@ export const upsertCloudUser = async (payload: {
         p_avatar_url: payload.avatarUrl ?? null,
       }),
     });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return normalizeCloudAppUser(await response.json());
   } catch {
-    // no-op for MVP
+    return null;
   }
 };
 
@@ -749,7 +773,34 @@ export const listCloudUsers = async (): Promise<CloudAppUser[] | null> => {
   }
 };
 
-export const listParticipantDirectory = async (): Promise<CloudAppUser[] | null> => {
+export const getMyCloudUser = async (): Promise<CloudAppUser | null> => {
+  if (!hasCloudConfig) {
+    return null;
+  }
+
+  try {
+    const response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/get_my_app_user`, {
+      method: 'POST',
+      headers: buildRequestHeaders(),
+      body: '{}',
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const rows = (await response.json()) as unknown;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return null;
+    }
+
+    return normalizeCloudAppUser(rows[0]);
+  } catch {
+    return null;
+  }
+};
+
+export const listParticipantDirectory = async (): Promise<CloudParticipantUser[] | null> => {
   if (!hasCloudConfig) {
     return null;
   }
@@ -766,8 +817,81 @@ export const listParticipantDirectory = async (): Promise<CloudAppUser[] | null>
     }
 
     const rows = (await response.json()) as unknown;
-    return Array.isArray(rows) ? (rows as CloudAppUser[]) : null;
+    return Array.isArray(rows) ? (rows as CloudParticipantUser[]) : null;
   } catch {
     return null;
+  }
+};
+
+export const upsertCloudCompletion = async (payload: {
+  peakId: string;
+  completionId?: string;
+  date: string;
+  participants: string[];
+  wikilocUrl?: string;
+}): Promise<{
+  id: string;
+  date: string;
+  participants: string[];
+  ownerUserId?: string | null;
+  wikilocUrl?: string;
+} | null> => {
+  if (!hasCloudConfig) {
+    return null;
+  }
+
+  try {
+    const response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/upsert_completion`, {
+      method: 'POST',
+      headers: buildRequestHeaders(),
+      body: JSON.stringify({
+        p_peak_id: payload.peakId,
+        p_completion_id: payload.completionId ?? null,
+        p_completion_date: payload.date,
+        p_participants: payload.participants,
+        p_wikiloc_url: payload.wikilocUrl ?? null,
+      }),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const record = asRecord(await response.json());
+    if (!record || typeof record.id !== 'string' || typeof record.date !== 'string') {
+      return null;
+    }
+
+    return {
+      id: record.id,
+      date: record.date,
+      participants: Array.isArray(record.participants)
+        ? record.participants.filter((value): value is string => typeof value === 'string')
+        : [],
+      ownerUserId: typeof record.ownerUserId === 'string' ? record.ownerUserId : null,
+      wikilocUrl: typeof record.wikilocUrl === 'string' ? record.wikilocUrl : undefined,
+    };
+  } catch {
+    return null;
+  }
+};
+
+export const deleteCloudCompletion = async (completionId: string): Promise<boolean> => {
+  if (!hasCloudConfig) {
+    return false;
+  }
+
+  try {
+    const response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/delete_completion`, {
+      method: 'POST',
+      headers: buildRequestHeaders(),
+      body: JSON.stringify({
+        p_completion_id: completionId,
+      }),
+    });
+
+    return response.ok;
+  } catch {
+    return false;
   }
 };

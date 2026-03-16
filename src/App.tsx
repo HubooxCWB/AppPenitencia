@@ -50,6 +50,9 @@ import {
 import {
   CloudAppUser,
   CloudAuthProfile,
+  CloudParticipantUser,
+  deleteCloudCompletion,
+  getMyCloudUser,
   isCloudSyncEnabled,
   listCloudUsers,
   listParticipantDirectory,
@@ -61,15 +64,13 @@ import {
   signUpWithSupabaseAuth,
   updateSupabaseAuthProfile,
   updateSupabaseAuthPassword,
+  upsertCloudCompletion,
   upsertCloudUser,
 } from './cloudSync';
 
 const AUTH_STORAGE_KEY = 'penitencia-auth-user';
-const FORCE_PASSWORD_CHANGE_STORAGE_KEY = 'penitencia-force-password-change';
 const MOUNTAIN_RANGES_STORAGE_KEY = 'penitencia-mountain-ranges';
 const MOUNTAIN_RANGES_BACKUP_STORAGE_KEY = 'penitencia-mountain-ranges-backup';
-const ADMIN_EMAIL = String(import.meta.env.VITE_ADMIN_EMAIL || 'huboox.rec@gmail.com').trim().toLowerCase() || 'huboox.rec@gmail.com';
-const TEMP_PASSWORD = String(import.meta.env.VITE_TEMP_PASSWORD || 'trekking') || 'trekking';
 const normalizeText = (value: unknown) =>
   String(value ?? '')
     .normalize('NFD')
@@ -91,7 +92,7 @@ const repairPossiblyMojibake = (value: unknown) => {
 };
 
 const buildParticipantNameMap = (
-  registeredUsers: CloudAppUser[],
+  registeredUsers: CloudParticipantUser[],
   currentUser?: User | null,
 ) => {
   const participantNameMap = new Map<string, string>();
@@ -108,11 +109,6 @@ const buildParticipantNameMap = (
   registeredUsers.forEach(registeredUser => {
     registerName(registeredUser.display_name, registeredUser.display_name);
     registerName(registeredUser.username, registeredUser.display_name);
-
-    const email = String(registeredUser.email ?? '').trim().toLowerCase();
-    if (email.includes('@')) {
-      registerName(email.split('@')[0], registeredUser.display_name);
-    }
   });
 
   if (currentUser) {
@@ -129,7 +125,7 @@ const buildParticipantNameMap = (
 };
 
 const buildParticipantAvatarMap = (
-  registeredUsers: CloudAppUser[],
+  registeredUsers: CloudParticipantUser[],
   currentUser?: User | null,
 ) => {
   const participantAvatarMap = new Map<string, string>();
@@ -146,11 +142,6 @@ const buildParticipantAvatarMap = (
   registeredUsers.forEach(registeredUser => {
     registerAvatar(registeredUser.display_name, registeredUser.avatar_url);
     registerAvatar(registeredUser.username, registeredUser.avatar_url);
-
-    const email = String(registeredUser.email ?? '').trim().toLowerCase();
-    if (email.includes('@')) {
-      registerAvatar(email.split('@')[0], registeredUser.avatar_url);
-    }
   });
 
   if (currentUser) {
@@ -259,27 +250,19 @@ const buildOptimizedAvatarDataUrl = async (file: File, size = 512): Promise<stri
 
 const mergeUserWithCloudDirectory = (
   baseUser: User,
-  rows: CloudAppUser[] | null | undefined,
+  row: CloudAppUser | null | undefined,
 ): User => {
-  if (!Array.isArray(rows) || rows.length === 0) {
-    return baseUser;
-  }
-
-  const matchedRow = rows.find(row =>
-    String(row.auth_user_id ?? '') === baseUser.id ||
-    normalizeText(row.email) === normalizeText(baseUser.email) ||
-    normalizeText(row.username) === normalizeText(baseUser.username),
-  );
-
-  if (!matchedRow) {
+  if (!row) {
     return baseUser;
   }
 
   return {
     ...baseUser,
-    name: String(matchedRow.display_name ?? '').trim() || baseUser.name,
-    username: String(matchedRow.username ?? '').trim() || baseUser.username,
-    avatar: String(matchedRow.avatar_url ?? '').trim() || baseUser.avatar,
+    name: String(row.display_name ?? '').trim() || baseUser.name,
+    username: String(row.username ?? '').trim() || baseUser.username,
+    email: String(row.email ?? '').trim() || baseUser.email,
+    avatar: String(row.avatar_url ?? '').trim() || baseUser.avatar,
+    role: row.role === 'ADMIN' ? 'ADMIN' : 'USER',
   };
 };
 
@@ -644,6 +627,11 @@ const normalizePeakCompletions = (peak: Peak): PeakCompletion[] => {
         completionRecord.participantes ??
         completionRecord.hikers,
       );
+      const ownerUserId = typeof completionRecord.ownerUserId === 'string' && completionRecord.ownerUserId.trim()
+        ? completionRecord.ownerUserId.trim()
+        : typeof completionRecord.owner_user_id === 'string' && completionRecord.owner_user_id.trim()
+          ? completionRecord.owner_user_id.trim()
+          : null;
 
       const wikilocCandidate = completionRecord.wikilocUrl ?? completionRecord.wikiloc;
       const wikilocUrl = typeof wikilocCandidate === 'string' && wikilocCandidate.trim()
@@ -674,6 +662,7 @@ const normalizePeakCompletions = (peak: Peak): PeakCompletion[] => {
         id,
         date,
         participants,
+        ...(ownerUserId ? { ownerUserId } : {}),
         ...(wikilocUrl ? { wikilocUrl } : {}),
       };
     })
@@ -974,7 +963,7 @@ export default function App() {
   const [isAuthBootstrapping, setIsAuthBootstrapping] = useState(cloudSyncEnabled);
   const [isPasswordChangeRequired, setIsPasswordChangeRequired] = useState(false);
   const [isCloudBootstrapping, setIsCloudBootstrapping] = useState(false);
-  const [registeredUsers, setRegisteredUsers] = useState<CloudAppUser[]>([]);
+  const [registeredUsers, setRegisteredUsers] = useState<CloudParticipantUser[]>([]);
   const [isLoadingRegisteredUsers, setIsLoadingRegisteredUsers] = useState(false);
   const hasInitializedMountainRangesPersistence = useRef(false);
   const hasAttemptedCloudHydration = useRef(false);
@@ -1026,26 +1015,19 @@ export default function App() {
         }
 
         const baseUser = toAppUserFromAuthProfile(authProfile);
-        const cloudUsers = await listParticipantDirectory();
-        const mappedUser = mergeUserWithCloudDirectory(baseUser, cloudUsers);
+        const syncedUser = baseUser.email
+          ? await upsertCloudUser({
+              authUserId: baseUser.id,
+              email: baseUser.email,
+              username: baseUser.username,
+              displayName: baseUser.name,
+              avatarUrl: baseUser.avatar,
+            })
+          : await getMyCloudUser();
+        const mappedUser = mergeUserWithCloudDirectory(baseUser, syncedUser);
         setUser(mappedUser);
         setCurrentScreen('HOME');
-        if (typeof window !== 'undefined') {
-          const mustChangePassword = window.localStorage.getItem(FORCE_PASSWORD_CHANGE_STORAGE_KEY) === '1';
-          setIsPasswordChangeRequired(
-            mustChangePassword && normalizeText(mappedUser.email) !== normalizeText(ADMIN_EMAIL),
-          );
-        }
-
-        if (mappedUser.email) {
-          void upsertCloudUser({
-            authUserId: mappedUser.id,
-            email: mappedUser.email,
-            username: mappedUser.username,
-            displayName: mappedUser.name,
-            avatarUrl: mappedUser.avatar,
-          });
-        }
+        setIsPasswordChangeRequired(false);
       } finally {
         if (!isCancelled) {
           setIsAuthBootstrapping(false);
@@ -1102,14 +1084,14 @@ export default function App() {
 
     window.localStorage.setItem(MOUNTAIN_RANGES_STORAGE_KEY, nextRangesJson);
 
-    if (cloudSyncEnabled) {
+    if (cloudSyncEnabled && user?.role === 'ADMIN') {
       if (!hasHydratedCloudRanges.current) {
         return;
       }
 
       void saveRangesToCloud(mountainRanges);
     }
-  }, [cloudSyncEnabled, mountainRanges]);
+  }, [cloudSyncEnabled, mountainRanges, user?.role]);
 
   // Hydrate from cloud only after auth bootstrap and when user is set, so the request uses the user session.
   useEffect(() => {
@@ -1176,7 +1158,9 @@ export default function App() {
           setMountainRanges(normalizedLocalRanges);
           hasHydratedCloudRanges.current = true;
           setIsCloudBootstrapping(false);
-          void saveRangesToCloud(normalizedLocalRanges);
+          if (user.role === 'ADMIN') {
+            void saveRangesToCloud(normalizedLocalRanges);
+          }
           return;
         }
 
@@ -1184,7 +1168,9 @@ export default function App() {
         setMountainRanges(normalizedMockRanges);
         hasHydratedCloudRanges.current = true;
         setIsCloudBootstrapping(false);
-        void saveRangesToCloud(normalizedMockRanges);
+        if (user.role === 'ADMIN') {
+          void saveRangesToCloud(normalizedMockRanges);
+        }
       } catch {
         if (!isCancelled) {
           const localRanges = getPreferredStoredRanges();
@@ -1233,26 +1219,26 @@ export default function App() {
   };
   const handleLogin = (userData: User, options?: { requiresPasswordChange?: boolean }) => {
     setUser(userData);
-    const requiresPasswordChange = Boolean(options?.requiresPasswordChange);
-    setIsPasswordChangeRequired(requiresPasswordChange);
-
-    if (typeof window !== 'undefined') {
-      if (requiresPasswordChange) {
-        window.localStorage.setItem(FORCE_PASSWORD_CHANGE_STORAGE_KEY, '1');
-      } else {
-        window.localStorage.removeItem(FORCE_PASSWORD_CHANGE_STORAGE_KEY);
-      }
-    }
-
-    setCurrentScreen(requiresPasswordChange ? 'LOGIN' : 'HOME');
+    setIsPasswordChangeRequired(Boolean(options?.requiresPasswordChange));
+    setCurrentScreen(options?.requiresPasswordChange ? 'LOGIN' : 'HOME');
     if (cloudSyncEnabled && userData.email) {
-      void upsertCloudUser({
-        authUserId: userData.id,
-        email: userData.email,
-        username: userData.username,
-        displayName: userData.name,
-        avatarUrl: userData.avatar,
-      });
+      void (async () => {
+        const syncedUser = await upsertCloudUser({
+          authUserId: userData.id,
+          email: userData.email,
+          username: userData.username,
+          displayName: userData.name,
+          avatarUrl: userData.avatar,
+        });
+
+        if (syncedUser) {
+          setUser(currentUser => (
+            currentUser && currentUser.id === userData.id
+              ? mergeUserWithCloudDirectory(currentUser, syncedUser)
+              : currentUser
+          ));
+        }
+      })();
     }
   };
 
@@ -1267,9 +1253,6 @@ export default function App() {
 
   const handlePasswordUpdated = () => {
     setIsPasswordChangeRequired(false);
-    if (typeof window !== 'undefined') {
-      window.localStorage.removeItem(FORCE_PASSWORD_CHANGE_STORAGE_KEY);
-    }
     setCurrentScreen('HOME');
   };
 
@@ -1301,18 +1284,29 @@ export default function App() {
           name: authProfileResult.profile.displayName,
           username: authProfileResult.profile.username,
           avatar: authProfileResult.profile.avatarUrl,
+          role: authProfileResult.profile.role,
         });
       }
     }
 
     if (cloudSyncEnabled && nextUser.email) {
-      void upsertCloudUser({
-        authUserId: nextUser.id,
-        email: nextUser.email,
-        username: nextUser.username,
-        displayName: nextUser.name,
-        avatarUrl: nextUser.avatar,
-      });
+      void (async () => {
+        const syncedUser = await upsertCloudUser({
+          authUserId: nextUser.id,
+          email: nextUser.email,
+          username: nextUser.username,
+          displayName: nextUser.name,
+          avatarUrl: nextUser.avatar,
+        });
+
+        if (syncedUser) {
+          setUser(currentUser => (
+            currentUser && currentUser.id === nextUser.id
+              ? mergeUserWithCloudDirectory(currentUser, syncedUser)
+              : currentUser
+          ));
+        }
+      })();
     }
   };
 
@@ -1369,6 +1363,31 @@ export default function App() {
       return;
     }
 
+    if (cloudSyncEnabled) {
+      void (async () => {
+        const wasDeleted = await deleteCloudCompletion(completionId);
+        if (!wasDeleted) {
+          return;
+        }
+
+        setMountainRanges(prev => withRangeStats(prev.map(range => {
+          if (range.id !== rangeId) return range;
+          const newPeaks = range.peaks.map(peak => {
+            if (peak.id !== peakId) return peak;
+            return {
+              ...peak,
+              completions: peak.completions.filter(c => c.id !== completionId)
+            };
+          });
+          return {
+            ...range,
+            peaks: newPeaks
+          };
+        })));
+      })();
+      return;
+    }
+
     setMountainRanges(prev => withRangeStats(prev.map(range => {
       if (range.id !== rangeId) return range;
       const newPeaks = range.peaks.map(peak => {
@@ -1399,6 +1418,68 @@ export default function App() {
     const participantsToPersist = hasCurrentUser
       ? baseParticipants
       : [...baseParticipants, currentUserDisplayName];
+
+    if (cloudSyncEnabled) {
+      void (async () => {
+        const savedCompletion = await upsertCloudCompletion({
+          peakId,
+          completionId,
+          date: data.date,
+          participants: participantsToPersist,
+          wikilocUrl: data.wikilocUrl,
+        });
+
+        if (!savedCompletion) {
+          return;
+        }
+
+        setMountainRanges(prev => withRangeStats(prev.map(range => {
+          if (range.id !== rangeId) return range;
+
+          const newPeaks = range.peaks.map(peak => {
+            if (peak.id !== peakId) return peak;
+
+            if (completionId) {
+              return {
+                ...peak,
+                completions: peak.completions.map(c =>
+                  c.id === completionId
+                    ? {
+                        ...c,
+                        id: savedCompletion.id,
+                        date: savedCompletion.date,
+                        participants: savedCompletion.participants,
+                        wikilocUrl: savedCompletion.wikilocUrl,
+                        ownerUserId: savedCompletion.ownerUserId ?? user.id,
+                      }
+                    : c
+                ),
+              };
+            }
+
+            return {
+              ...peak,
+              completions: [
+                ...peak.completions,
+                {
+                  id: savedCompletion.id,
+                  date: savedCompletion.date,
+                  participants: savedCompletion.participants,
+                  ownerUserId: savedCompletion.ownerUserId ?? user.id,
+                  wikilocUrl: savedCompletion.wikilocUrl,
+                },
+              ],
+            };
+          });
+
+          return {
+            ...range,
+            peaks: newPeaks
+          };
+        })));
+      })();
+      return;
+    }
 
     setMountainRanges(prev => withRangeStats(prev.map(range => {
       if (range.id !== rangeId) return range;
@@ -1551,6 +1632,9 @@ export default function App() {
       setMountainRanges(normalizedRanges);
 
       if (cloudSyncEnabled) {
+        if (!isAdminUser) {
+          return { success: false, message: 'Somente admin pode importar backup na nuvem.' };
+        }
         void saveRangesToCloud(normalizedRanges);
         return { success: true, message: 'Backup importado e sincronizado com o banco.' };
       }
@@ -2159,7 +2243,7 @@ function LoginScreen({
   onLogin,
   isCloudEnabled,
 }: {
-  onLogin: (user: User, options?: { requiresPasswordChange?: boolean }) => void;
+  onLogin: (user: User, options?: { requiresPasswordChange?: boolean }) => void | Promise<void>;
   isCloudEnabled: boolean;
 }) {
   const [email, setEmail] = useState('');
@@ -2203,14 +2287,7 @@ function LoginScreen({
         return;
       }
 
-      const requiresPasswordChange =
-        mode === 'signin' &&
-        password === TEMP_PASSWORD &&
-        normalizeText(normalizedEmail) !== normalizeText(ADMIN_EMAIL);
-
-      onLogin(toAppUserFromAuthProfile(authResult.profile), {
-        requiresPasswordChange,
-      });
+      await onLogin(toAppUserFromAuthProfile(authResult.profile));
     } finally {
       setIsLoading(false);
     }
@@ -2357,11 +2434,6 @@ function PasswordUpdateScreen({
       return;
     }
 
-    if (newPassword === TEMP_PASSWORD) {
-      setError('A nova senha precisa ser diferente da temporária.');
-      return;
-    }
-
     setIsLoading(true);
     try {
       const result = await updateSupabaseAuthPassword(newPassword);
@@ -2501,6 +2573,13 @@ function PerfilScreen({
   const [profileError, setProfileError] = useState('');
   const [profileSuccessMessage, setProfileSuccessMessage] = useState('');
   const [isProfileEditorOpen, setIsProfileEditorOpen] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
+  const [passwordSuccessMessage, setPasswordSuccessMessage] = useState('');
+  const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
   const userKeys = Array.from(
     new Set([normalizeText(user.name), normalizeText(user.username)].filter(Boolean)),
   );
@@ -2619,6 +2698,41 @@ function PerfilScreen({
     setProfileError('');
     setProfileSuccessMessage('Perfil atualizado.');
     setIsProfileEditorOpen(false);
+  };
+
+  const handleChangePassword = async () => {
+    setPasswordError('');
+    setPasswordSuccessMessage('');
+
+    if (!newPassword || !confirmPassword) {
+      setPasswordError('Preencha a nova senha e a confirmação.');
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      setPasswordError('Use no mínimo 6 caracteres.');
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setPasswordError('As senhas não conferem.');
+      return;
+    }
+
+    setIsUpdatingPassword(true);
+    try {
+      const result = await updateSupabaseAuthPassword(newPassword);
+      if ('message' in result) {
+        setPasswordError(result.message);
+        return;
+      }
+
+      setNewPassword('');
+      setConfirmPassword('');
+      setPasswordSuccessMessage('Senha atualizada com sucesso.');
+    } finally {
+      setIsUpdatingPassword(false);
+    }
   };
 
   useEffect(() => {
@@ -2764,6 +2878,81 @@ function PerfilScreen({
           </button>
         </div>
       )}
+      <div className="p-4 rounded-2xl border border-white/10 bg-white/5 space-y-3">
+        <div className="space-y-1">
+          <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Segurança</h3>
+          <p className="text-[11px] text-slate-400">Atualize sua senha quando quiser. A sessão atual já autoriza a troca.</p>
+        </div>
+        <div className="space-y-1.5">
+          <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Nova senha</label>
+          <div className="relative">
+            <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={18} />
+            <input
+              type={showNewPassword ? 'text' : 'password'}
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={(event) => {
+                setNewPassword(event.target.value);
+                setPasswordError('');
+                setPasswordSuccessMessage('');
+              }}
+              placeholder="Digite a nova senha"
+              className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all"
+            />
+            <button
+              type="button"
+              onClick={() => setShowNewPassword(prev => !prev)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-primary/60 hover:text-primary transition-colors p-1"
+              aria-label={showNewPassword ? 'Ocultar senha' : 'Mostrar senha'}
+              title={showNewPassword ? 'Ocultar senha' : 'Mostrar senha'}
+            >
+              {showNewPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+            </button>
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Confirmar senha</label>
+          <div className="relative">
+            <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={18} />
+            <input
+              type={showConfirmPassword ? 'text' : 'password'}
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(event) => {
+                setConfirmPassword(event.target.value);
+                setPasswordError('');
+                setPasswordSuccessMessage('');
+              }}
+              placeholder="Confirme a nova senha"
+              className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all"
+            />
+            <button
+              type="button"
+              onClick={() => setShowConfirmPassword(prev => !prev)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-primary/60 hover:text-primary transition-colors p-1"
+              aria-label={showConfirmPassword ? 'Ocultar senha' : 'Mostrar senha'}
+              title={showConfirmPassword ? 'Ocultar senha' : 'Mostrar senha'}
+            >
+              {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+            </button>
+          </div>
+          <p className="text-[11px] text-slate-400">Recomendado: usar pelo menos 8 caracteres.</p>
+        </div>
+        {passwordError && (
+          <p className="text-xs text-red-300">{passwordError}</p>
+        )}
+        {passwordSuccessMessage && (
+          <p className="text-xs text-emerald-300">{passwordSuccessMessage}</p>
+        )}
+        <button
+          type="button"
+          onClick={() => void handleChangePassword()}
+          disabled={isUpdatingPassword}
+          className="w-full h-11 rounded-xl border border-primary/20 bg-primary text-background-dark font-bold text-sm disabled:opacity-50"
+        >
+          {isUpdatingPassword ? 'Atualizando...' : 'Atualizar senha'}
+        </button>
+      </div>
       <div className="space-y-4">
         <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Estatísticas do Montanhista</h3>
         <div className="p-4 rounded-2xl border border-white/10 bg-white/5">

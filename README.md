@@ -6,8 +6,9 @@ Aplicativo de acompanhamento de conquistas em trilhas, picos, morros e cachoeira
 
 - Auth real com Supabase (`email + senha`)
 - Perfil de usuario sincronizado em `public.app_users` com `auth_user_id`
-- Fluxo de senha temporaria com troca obrigatoria no primeiro acesso
-- Snapshot de dados no Supabase via RPC (`get_snapshot` / `replace_snapshot`)
+- Permissoes e papel `ADMIN` definidos no Supabase
+- Snapshot administrativo no Supabase via RPC (`get_snapshot` / `replace_snapshot`)
+- Completions salvas por RPC especifica com autoria por `owner_user_id`
 - Fallback local com `localStorage` + backup
 
 ## Stack
@@ -42,9 +43,6 @@ Configure em `.env.local`:
 ```env
 VITE_SUPABASE_URL="https://SEU_PROJETO.supabase.co"
 VITE_SUPABASE_PUBLISHABLE_KEY="sb_publishable_..."
-VITE_ADMIN_EMAIL="huboox.rec@gmail.com"
-VITE_ADMIN_USERNAME="penitencia"
-VITE_TEMP_PASSWORD="trekking"
 ```
 
 ## Setup Supabase
@@ -62,9 +60,8 @@ VITE_TEMP_PASSWORD="trekking"
 
 ### Admin
 
-- E-mail admin fixo: `huboox.rec@gmail.com`
-- Senha inicial: `trekking`
-- O papel `ADMIN` e atribuido no backend pelo e-mail.
+- O papel `ADMIN` e atribuido no Supabase na tabela `public.app_users`.
+- A interface apenas reflete o papel retornado pelo backend.
 
 ### Criar logins para amigos
 
@@ -75,8 +72,6 @@ No painel Supabase:
 3. Definir senha temporaria (recomendado `trekking`)
 4. Marcar confirmacao do email do usuario como ativa no cadastro manual
 
-Ao entrar no app com senha temporaria (`VITE_TEMP_PASSWORD`), o usuario e obrigado a trocar senha antes de continuar.
-
 ## Deploy no Vercel (free)
 
 1. Subir projeto no GitHub/GitLab
@@ -84,9 +79,6 @@ Ao entrar no app com senha temporaria (`VITE_TEMP_PASSWORD`), o usuario e obriga
 3. Em `Project Settings > Environment Variables`, configurar:
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
-- `VITE_ADMIN_EMAIL`
-- `VITE_ADMIN_USERNAME`
-- `VITE_TEMP_PASSWORD`
 4. Deploy
 
 ## Persistencia e backup

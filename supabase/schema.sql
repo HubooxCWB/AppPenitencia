@@ -68,6 +68,7 @@ create table if not exists public.peaks (
 create table if not exists public.completions (
   id text primary key,
   peak_id text not null references public.peaks(id) on delete cascade,
+  owner_user_id uuid references auth.users(id) on delete set null,
   completion_date date not null,
   completion_date_label text not null,
   wikiloc_url text,
@@ -75,6 +76,25 @@ create table if not exists public.completions (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.completions
+  add column if not exists owner_user_id uuid;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'completions_owner_user_id_fkey'
+      and conrelid = 'public.completions'::regclass
+  ) then
+    alter table public.completions
+      add constraint completions_owner_user_id_fkey
+      foreign key (owner_user_id)
+      references auth.users(id)
+      on delete set null;
+  end if;
+end $$;
 
 create table if not exists public.completion_participants (
   completion_id text not null references public.completions(id) on delete cascade,
@@ -87,6 +107,7 @@ create table if not exists public.completion_participants (
 create index if not exists idx_peaks_range_id on public.peaks(range_id);
 create index if not exists idx_peaks_tipo_local on public.peaks(tipo_local);
 create index if not exists idx_completions_peak_id on public.completions(peak_id);
+create index if not exists idx_completions_owner_user_id on public.completions(owner_user_id);
 create index if not exists idx_completion_participants_completion_id on public.completion_participants(completion_id);
 create unique index if not exists idx_app_users_auth_user_id_unique
   on public.app_users(auth_user_id)
@@ -197,9 +218,28 @@ as $$
   select to_char(input_date, 'DD/MM/YYYY');
 $$;
 
+create or replace function public.is_current_user_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.app_users u
+    where u.auth_user_id = auth.uid()
+      and u.role = 'ADMIN'
+      and u.is_active = true
+  );
+$$;
+
 drop function if exists public.upsert_app_user(text, text, text);
 drop function if exists public.list_app_users();
 drop function if exists public.list_participant_directory();
+drop function if exists public.get_my_app_user();
+drop function if exists public.upsert_completion(text, text, text, jsonb, text);
+drop function if exists public.delete_completion(text);
 
 create or replace function public.upsert_app_user(
   p_auth_user_id uuid,
@@ -339,12 +379,7 @@ begin
     raise exception 'forbidden';
   end if;
 
-  if not exists (
-    select 1
-    from public.app_users u
-    where u.auth_user_id = auth.uid()
-      and u.role = 'ADMIN'
-  ) then
+  if not public.is_current_user_admin() then
     raise exception 'forbidden';
   end if;
 
@@ -368,6 +403,37 @@ end;
 $$;
 
 create or replace function public.list_participant_directory()
+returns table (
+  username text,
+  display_name text,
+  avatar_url text,
+  created_at timestamptz
+)
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'forbidden';
+  end if;
+
+  return query
+  select
+    u.username,
+    u.display_name,
+    u.avatar_url,
+    u.created_at
+  from public.app_users u
+  where u.is_active = true
+  order by
+    u.display_name asc,
+    u.username asc;
+end;
+$$;
+
+create or replace function public.get_my_app_user()
 returns table (
   auth_user_id uuid,
   email text,
@@ -401,11 +467,8 @@ begin
     u.last_login_at,
     u.created_at
   from public.app_users u
-  where u.is_active = true
-  order by
-    case when u.role = 'ADMIN' then 0 else 1 end,
-    u.display_name asc,
-    u.username asc;
+  where u.auth_user_id = auth.uid()
+  limit 1;
 end;
 $$;
 
@@ -433,6 +496,10 @@ declare
 begin
   if payload is null or jsonb_typeof(payload) <> 'array' then
     raise exception 'payload must be a JSON array';
+  end if;
+
+  if auth.uid() is null or not public.is_current_user_admin() then
+    raise exception 'forbidden';
   end if;
 
   truncate table
@@ -505,6 +572,7 @@ begin
         insert into public.completions (
           id,
           peak_id,
+          owner_user_id,
           completion_date,
           completion_date_label,
           wikiloc_url,
@@ -513,6 +581,11 @@ begin
         values (
           v_completion_id,
           v_peak_id,
+          case
+            when (v_completion_item->>'ownerUserId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+              then (v_completion_item->>'ownerUserId')::uuid
+            else null
+          end,
           v_completion_date,
           v_completion_label,
           nullif(v_completion_item->>'wikilocUrl', ''),
@@ -539,6 +612,163 @@ begin
 end;
 $$;
 
+create or replace function public.upsert_completion(
+  p_peak_id text,
+  p_completion_id text default null,
+  p_completion_date text default null,
+  p_participants jsonb default '[]'::jsonb,
+  p_wikiloc_url text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_completion_id text;
+  v_completion_date date;
+  v_completion_label text;
+  v_peak_exists boolean;
+  v_existing public.completions;
+  v_participant_name text;
+  v_participant_order integer := 0;
+begin
+  if auth.uid() is null then
+    raise exception 'forbidden';
+  end if;
+
+  select exists (
+    select 1
+    from public.peaks p
+    where p.id = p_peak_id
+  ) into v_peak_exists;
+
+  if not v_peak_exists then
+    raise exception 'peak not found';
+  end if;
+
+  v_completion_id := nullif(trim(coalesce(p_completion_id, '')), '');
+  if v_completion_id is null then
+    v_completion_id := gen_random_uuid()::text;
+  end if;
+
+  select *
+  into v_existing
+  from public.completions c
+  where c.id = v_completion_id;
+
+  if found then
+    if v_existing.owner_user_id is distinct from auth.uid()
+      and not public.is_current_user_admin()
+    then
+      raise exception 'forbidden';
+    end if;
+  end if;
+
+  v_completion_date := public.parse_snapshot_date(p_completion_date);
+  v_completion_label := nullif(trim(coalesce(p_completion_date, '')), '');
+  if v_completion_label is null or v_completion_label !~ '^\d{2}/\d{2}/\d{4}$' then
+    v_completion_label := public.to_br_date(v_completion_date);
+  end if;
+
+  insert into public.completions (
+    id,
+    peak_id,
+    owner_user_id,
+    completion_date,
+    completion_date_label,
+    wikiloc_url
+  )
+  values (
+    v_completion_id,
+    p_peak_id,
+    coalesce(v_existing.owner_user_id, auth.uid()),
+    v_completion_date,
+    v_completion_label,
+    nullif(trim(coalesce(p_wikiloc_url, '')), '')
+  )
+  on conflict (id)
+  do update set
+    peak_id = excluded.peak_id,
+    completion_date = excluded.completion_date,
+    completion_date_label = excluded.completion_date_label,
+    wikiloc_url = excluded.wikiloc_url,
+    updated_at = now();
+
+  delete from public.completion_participants
+  where completion_id = v_completion_id;
+
+  if p_participants is not null and jsonb_typeof(p_participants) <> 'array' then
+    raise exception 'participants must be a JSON array';
+  end if;
+
+  for v_participant_name in
+    select value
+    from jsonb_array_elements_text(coalesce(p_participants, '[]'::jsonb))
+  loop
+    if v_participant_name is null or btrim(v_participant_name) = '' then
+      continue;
+    end if;
+
+    v_participant_order := v_participant_order + 1;
+    insert into public.completion_participants (completion_id, participant_name, sort_order)
+    values (v_completion_id, btrim(v_participant_name), v_participant_order)
+    on conflict (completion_id, participant_name)
+    do update set sort_order = excluded.sort_order;
+  end loop;
+
+  return jsonb_build_object(
+    'id', v_completion_id,
+    'date', v_completion_label,
+    'participants', coalesce(
+      (
+        select jsonb_agg(cp.participant_name order by cp.sort_order, cp.participant_name)
+        from public.completion_participants cp
+        where cp.completion_id = v_completion_id
+      ),
+      '[]'::jsonb
+    ),
+    'ownerUserId', coalesce(v_existing.owner_user_id, auth.uid())::text,
+    'wikilocUrl', nullif(trim(coalesce(p_wikiloc_url, '')), '')
+  );
+end;
+$$;
+
+create or replace function public.delete_completion(
+  p_completion_id text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_owner_user_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'forbidden';
+  end if;
+
+  select c.owner_user_id
+  into v_owner_user_id
+  from public.completions c
+  where c.id = p_completion_id;
+
+  if not found then
+    raise exception 'completion not found';
+  end if;
+
+  if v_owner_user_id is distinct from auth.uid()
+    and not public.is_current_user_admin()
+  then
+    raise exception 'forbidden';
+  end if;
+
+  delete from public.completions
+  where id = p_completion_id;
+end;
+$$;
+
 create or replace function public.get_snapshot()
 returns jsonb
 language sql
@@ -554,6 +784,7 @@ with completion_json as (
         jsonb_build_object(
           'id', c.id,
           'date', c.completion_date_label,
+          'ownerUserId', c.owner_user_id,
           'participants', coalesce(
             (
               select jsonb_agg(cp.participant_name order by cp.sort_order, cp.participant_name)
@@ -622,18 +853,27 @@ select coalesce(
 from public.mountain_ranges mr;
 $$;
 
-grant execute on function public.get_snapshot() to anon, authenticated;
-grant execute on function public.replace_snapshot(jsonb) to anon, authenticated;
+grant execute on function public.is_current_user_admin() to authenticated;
+grant execute on function public.get_snapshot() to authenticated;
+grant execute on function public.get_my_app_user() to authenticated;
+grant execute on function public.replace_snapshot(jsonb) to authenticated;
 grant execute on function public.upsert_app_user(uuid, text, text, text, text) to authenticated;
+grant execute on function public.upsert_completion(text, text, text, jsonb, text) to authenticated;
+grant execute on function public.delete_completion(text) to authenticated;
 grant execute on function public.list_app_users() to authenticated;
 grant execute on function public.list_participant_directory() to authenticated;
 
--- RLS disabled for MVP without auth.
-alter table public.app_users disable row level security;
-alter table public.mountain_ranges disable row level security;
-alter table public.peaks disable row level security;
-alter table public.completions disable row level security;
-alter table public.completion_participants disable row level security;
+revoke all on public.app_users from anon, authenticated;
+revoke all on public.mountain_ranges from anon, authenticated;
+revoke all on public.peaks from anon, authenticated;
+revoke all on public.completions from anon, authenticated;
+revoke all on public.completion_participants from anon, authenticated;
+
+alter table public.app_users enable row level security;
+alter table public.mountain_ranges enable row level security;
+alter table public.peaks enable row level security;
+alter table public.completions enable row level security;
+alter table public.completion_participants enable row level security;
 
 -- Remove legacy table after migration to normalized model.
 drop table if exists public.app_state cascade;
