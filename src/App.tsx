@@ -1966,6 +1966,19 @@ function CompletionModal({
   );
   const [wikilocUrl, setWikilocUrl] = useState(initialData?.wikilocUrl || '');
 
+  useEffect(() => {
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+
+    document.body.style.overflow = 'hidden';
+    document.documentElement.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+    };
+  }, []);
+
   const addParticipantByName = (name: string) => {
     const resolvedName = resolveParticipantDisplayName(name, participantNameMap);
     if (!resolvedName || !participantNameMap.has(normalizeText(name))) {
@@ -2010,13 +2023,13 @@ function CompletionModal({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-[100] flex items-end justify-center p-0 sm:items-center sm:p-6 bg-black/80 backdrop-blur-sm"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm overflow-x-hidden overscroll-none sm:p-6"
     >
       <motion.div 
         initial={{ scale: 0.98, opacity: 0, y: 20 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
         exit={{ scale: 0.98, opacity: 0, y: 20 }}
-        className="w-full max-w-sm bg-neutral-forest p-4 sm:p-6 rounded-t-3xl sm:rounded-3xl border border-primary/20 space-y-5 sm:space-y-6 max-h-[85vh] sm:max-h-[90vh] overflow-y-auto no-scrollbar"
+        className="relative mx-auto w-full max-w-sm rounded-3xl border border-primary/20 bg-neutral-forest p-4 sm:p-6 space-y-5 sm:space-y-6 max-h-[min(88dvh,42rem)] overflow-y-auto overflow-x-hidden overscroll-contain no-scrollbar"
       >
         <div className="flex justify-between items-center">
           <h2 className="text-xl font-bold">{initialData ? 'Editar' : 'Concluir'} {peak.name}</h2>
@@ -2035,7 +2048,7 @@ function CompletionModal({
               type="date" 
               value={date}
               onChange={(e) => setDate(e.target.value)}
-              className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-sm focus:outline-none focus:border-primary transition-all text-white"
+              className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-base sm:text-sm focus:outline-none focus:border-primary transition-all text-white"
             />
           </div>
 
@@ -2044,7 +2057,7 @@ function CompletionModal({
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
               <Users size={12} /> Participantes
             </label>
-            <div className="flex gap-2">
+            <div className="flex items-start gap-2">
               <input 
                 type="text" 
                 placeholder="Buscar usuário cadastrado"
@@ -2061,7 +2074,7 @@ function CompletionModal({
                     addParticipant();
                   }
                 }}
-                className="flex-1 min-w-0 bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-sm focus:outline-none focus:border-primary transition-all"
+                className="flex-1 min-w-0 bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-base sm:text-sm focus:outline-none focus:border-primary transition-all"
               />
               <button 
                 onClick={addParticipant}
@@ -2114,7 +2127,7 @@ function CompletionModal({
               placeholder="https://pt.wikiloc.com/..."
               value={wikilocUrl}
               onChange={(e) => setWikilocUrl(e.target.value)}
-              className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-sm focus:outline-none focus:border-primary transition-all"
+              className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-base sm:text-sm focus:outline-none focus:border-primary transition-all"
             />
           </div>
         </div>
@@ -2122,7 +2135,7 @@ function CompletionModal({
         <div className="flex gap-3 pt-2">
           <button 
             onClick={onClose}
-            className="flex-1 h-12 rounded-2xl border border-white/10 text-slate-400 font-bold text-sm"
+            className="flex-1 h-12 rounded-2xl border border-white/10 text-slate-400 font-bold text-base sm:text-sm"
           >
             Cancelar
           </button>
@@ -2132,7 +2145,7 @@ function CompletionModal({
               participants,
               wikilocUrl,
             })}
-            className="flex-1 h-12 rounded-2xl bg-primary text-background-dark font-bold text-sm"
+            className="flex-1 h-12 rounded-2xl bg-primary text-background-dark font-bold text-base sm:text-sm"
           >
             {initialData ? 'Salvar' : 'Confirmar'}
           </button>
@@ -3435,7 +3448,7 @@ function SerrasScreen({
     .filter((range): range is MountainRange => range !== null);
 
   return (
-    <div className="flex flex-col min-h-screen">
+    <div className="flex min-h-screen flex-col overflow-x-hidden">
       <header className="sticky top-0 z-20 bg-background-dark/95 backdrop-blur-md border-b border-primary/20 p-4 space-y-4">
         <div className="flex items-center justify-between">
           <button onClick={onBack} type="button" className="size-10 flex items-center justify-center rounded-full hover:bg-primary/10 transition-colors">
@@ -3474,7 +3487,7 @@ function SerrasScreen({
         </div>
       </header>
 
-      <div className="p-4 space-y-4">
+      <div className="space-y-4 overflow-x-hidden p-4">
         {filteredRanges.length > 0 ? (
           filteredRanges.map(range => (
             <MountainRangeAccordion 
@@ -3627,9 +3640,9 @@ function MountainRangeAccordion({
                               peak.completions.length > 0 ? style.cardCompletedClass : style.cardPendingClass
                             }`}
                           >
-                            <div className="w-full flex items-center justify-between">
-                              <div className="flex flex-col">
-                                <span className="font-bold text-sm">{peak.name}</span>
+                            <div className="w-full flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1 flex flex-col">
+                                <span className="break-words font-bold text-sm">{peak.name}</span>
                                 <span className={`text-[9px] ${style.typeInfoClass}`}>
                                   {formatPeakMeta(peak)}
                                 </span>
@@ -3639,7 +3652,7 @@ function MountainRangeAccordion({
                                     : 'Pendente'}
                                 </span>
                               </div>
-                              <div className="flex items-center gap-2">
+                              <div className="flex shrink-0 items-center gap-2">
                                 {canManageCatalog && (
                                   <>
                                     <button
@@ -3681,7 +3694,7 @@ function MountainRangeAccordion({
                                 {peak.completions.map((comp: PeakCompletion) => (
                                   <div
                                     key={comp.id}
-                                    className={`bg-black/20 p-2 rounded-lg relative group transition-colors ${
+                                    className={`relative rounded-lg bg-black/20 p-2 pr-8 group transition-colors ${
                                       canManageCatalog ? 'cursor-pointer hover:bg-black/30' : 'cursor-default'
                                     }`}
                                     onClick={() => {
@@ -3701,7 +3714,7 @@ function MountainRangeAccordion({
                                             onDeleteCompletion(range.id, peak.id, comp.id);
                                           }
                                         }}
-                                        className="absolute -top-2 -right-2 size-5 bg-red-500 text-white rounded-full flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity z-10"
+                                        className="absolute right-2 top-2 z-10 flex size-5 items-center justify-center rounded-full bg-red-500 text-white opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100"
                                       >
                                         <X size={10} />
                                       </button>
