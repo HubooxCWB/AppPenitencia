@@ -748,3 +748,26 @@ export const listCloudUsers = async (): Promise<CloudAppUser[] | null> => {
     return null;
   }
 };
+
+export const listParticipantDirectory = async (): Promise<CloudAppUser[] | null> => {
+  if (!hasCloudConfig) {
+    return null;
+  }
+
+  try {
+    const response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/list_participant_directory`, {
+      method: 'POST',
+      headers: buildRequestHeaders(),
+      body: '{}',
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const rows = (await response.json()) as unknown;
+    return Array.isArray(rows) ? (rows as CloudAppUser[]) : null;
+  } catch {
+    return null;
+  }
+};

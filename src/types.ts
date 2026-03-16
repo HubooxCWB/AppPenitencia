@@ -1,4 +1,4 @@
-import { 
+﻿import { 
   Home, 
   Mountain, 
   BookOpen, 
@@ -293,5 +293,6 @@ export const MOCK_LEADERS: Leader[] = [
     lastPeak: 'Pico Caratuva'
   }
 ];
+
 
 

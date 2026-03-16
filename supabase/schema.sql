@@ -199,6 +199,7 @@ $$;
 
 drop function if exists public.upsert_app_user(text, text, text);
 drop function if exists public.list_app_users();
+drop function if exists public.list_participant_directory();
 
 create or replace function public.upsert_app_user(
   p_auth_user_id uuid,
@@ -362,6 +363,48 @@ begin
   order by
     case when u.role = 'ADMIN' then 0 else 1 end,
     u.last_login_at desc nulls last,
+    u.username asc;
+end;
+$$;
+
+create or replace function public.list_participant_directory()
+returns table (
+  auth_user_id uuid,
+  email text,
+  username text,
+  display_name text,
+  role text,
+  avatar_url text,
+  is_active boolean,
+  last_login_at timestamptz,
+  created_at timestamptz
+)
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'forbidden';
+  end if;
+
+  return query
+  select
+    u.auth_user_id,
+    u.email,
+    u.username,
+    u.display_name,
+    u.role::text as role,
+    u.avatar_url,
+    u.is_active,
+    u.last_login_at,
+    u.created_at
+  from public.app_users u
+  where u.is_active = true
+  order by
+    case when u.role = 'ADMIN' then 0 else 1 end,
+    u.display_name asc,
     u.username asc;
 end;
 $$;
@@ -583,6 +626,7 @@ grant execute on function public.get_snapshot() to anon, authenticated;
 grant execute on function public.replace_snapshot(jsonb) to anon, authenticated;
 grant execute on function public.upsert_app_user(uuid, text, text, text, text) to authenticated;
 grant execute on function public.list_app_users() to authenticated;
+grant execute on function public.list_participant_directory() to authenticated;
 
 -- RLS disabled for MVP without auth.
 alter table public.app_users disable row level security;

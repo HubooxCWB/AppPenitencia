@@ -52,6 +52,7 @@ import {
   CloudAuthProfile,
   isCloudSyncEnabled,
   listCloudUsers,
+  listParticipantDirectory,
   loadRangesFromCloud,
   restoreSupabaseAuthProfile,
   saveRangesToCloud,
@@ -75,6 +76,19 @@ const normalizeText = (value: unknown) =>
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .trim();
+
+const repairPossiblyMojibake = (value: unknown) => {
+  const text = String(value ?? '');
+  if (!/[ÃÂ]/.test(text)) {
+    return text;
+  }
+
+  try {
+    return decodeURIComponent(escape(text));
+  } catch {
+    return text;
+  }
+};
 
 const buildParticipantNameMap = (
   registeredUsers: CloudAppUser[],
@@ -536,7 +550,7 @@ const toBRDate = (value: unknown): string | null => {
     return null;
   }
 
-  const trimmed = value.trim();
+  const trimmed = repairPossiblyMojibake(value).trim();
   if (!trimmed) {
     return null;
   }
@@ -566,7 +580,7 @@ const toParticipantList = (value: unknown): string[] => {
     return Array.from(
       new Set(
         value
-          .map(participant => String(participant ?? '').trim())
+          .map(participant => repairPossiblyMojibake(participant).trim())
           .filter(Boolean),
       ),
     );
@@ -575,7 +589,7 @@ const toParticipantList = (value: unknown): string[] => {
   if (typeof value === 'string') {
     return Array.from(
       new Set(
-        value
+        repairPossiblyMojibake(value)
           .split(/[;,]/)
           .map(participant => participant.trim())
           .filter(Boolean),
@@ -698,16 +712,18 @@ const normalizePeakCompletions = (peak: Peak): PeakCompletion[] => {
 const cloneRanges = (ranges: MountainRange[]): MountainRange[] =>
   ranges.map<MountainRange>(range => ({
     ...range,
+    name: repairPossiblyMojibake(range.name),
     peaks: Array.isArray(range.peaks)
       ? range.peaks.map<Peak>(peak => {
-          const normalizedPeakName = normalizeText(peak.name);
+          const repairedPeakName = repairPossiblyMojibake(peak.name);
+          const normalizedPeakName = normalizeText(repairedPeakName);
           const basePeakData = BASE_PEAK_RULES.get(normalizedPeakName);
           const localType = basePeakData?.tipo_local ?? resolvePeakLocalType(peak);
           const category: PeakCategory = localType === 'cachoeira' ? 'WATERFALL' : 'PEAK';
 
           return {
             ...peak,
-            name: basePeakData?.name ?? peak.name,
+            name: basePeakData?.name ?? repairedPeakName,
             tipo_local: localType,
             altitude_metros: basePeakData?.altitude_metros ?? resolvePeakAltitude(peak),
             altura_queda_metros: basePeakData?.altura_queda_metros ?? resolvePeakDropHeight(peak),
@@ -1010,7 +1026,7 @@ export default function App() {
         }
 
         const baseUser = toAppUserFromAuthProfile(authProfile);
-        const cloudUsers = await listCloudUsers();
+        const cloudUsers = await listParticipantDirectory();
         const mappedUser = mergeUserWithCloudDirectory(baseUser, cloudUsers);
         setUser(mappedUser);
         setCurrentScreen('HOME');
@@ -1055,7 +1071,7 @@ export default function App() {
 
     const loadRegisteredUsers = async () => {
       setIsLoadingRegisteredUsers(true);
-      const rows = await listCloudUsers();
+      const rows = await listParticipantDirectory();
       if (!isCancelled) {
         setRegisteredUsers(Array.isArray(rows) ? rows : []);
         setIsLoadingRegisteredUsers(false);
@@ -1994,13 +2010,13 @@ function CompletionModal({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-sm"
+      className="fixed inset-0 z-[100] flex items-end justify-center p-0 sm:items-center sm:p-6 bg-black/80 backdrop-blur-sm"
     >
       <motion.div 
-        initial={{ scale: 0.9, opacity: 0, y: 20 }}
+        initial={{ scale: 0.98, opacity: 0, y: 20 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
-        exit={{ scale: 0.9, opacity: 0, y: 20 }}
-        className="w-full max-w-sm bg-neutral-forest p-6 rounded-3xl border border-primary/20 space-y-6 max-h-[90vh] overflow-y-auto no-scrollbar"
+        exit={{ scale: 0.98, opacity: 0, y: 20 }}
+        className="w-full max-w-sm bg-neutral-forest p-4 sm:p-6 rounded-t-3xl sm:rounded-3xl border border-primary/20 space-y-5 sm:space-y-6 max-h-[85vh] sm:max-h-[90vh] overflow-y-auto no-scrollbar"
       >
         <div className="flex justify-between items-center">
           <h2 className="text-xl font-bold">{initialData ? 'Editar' : 'Concluir'} {peak.name}</h2>
@@ -2024,76 +2040,69 @@ function CompletionModal({
           </div>
 
           {/* Participants */}
-          {isAdmin ? (
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
-                <Users size={12} /> Participantes
-              </label>
-              <div className="flex gap-2">
-                <input 
-                  type="text" 
-                  placeholder="Buscar usuário cadastrado"
-                  value={participantInput}
-                  onChange={(e) => {
-                    setParticipantInput(e.target.value);
-                    if (participantError) {
-                      setParticipantError('');
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      addParticipant();
-                    }
-                  }}
-                  className="flex-1 bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-sm focus:outline-none focus:border-primary transition-all"
-                />
-                <button 
-                  onClick={addParticipant}
-                  disabled={!participantNameMap.has(normalizeText(participantInput))}
-                  className="size-12 bg-primary/10 text-primary border border-primary/20 rounded-2xl flex items-center justify-center"
-                >
-                  <Plus size={20} />
-                </button>
-              </div>
-              {isLoadingParticipantSuggestions && (
-                <p className="text-[11px] text-slate-400">Carregando usuários da plataforma...</p>
-              )}
-              {!isLoadingParticipantSuggestions && participantSuggestions.length === 0 && (
-                <p className="text-[11px] text-slate-400">Nenhum usuário da plataforma disponível para seleção.</p>
-              )}
-              {participantError && (
-                <p className="text-[11px] text-red-300">{participantError}</p>
-              )}
-              {filteredSuggestions.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {filteredSuggestions.map(name => (
-                    <button
-                      key={name}
-                      type="button"
-                      onClick={() => addParticipantByName(name)}
-                      className="text-[10px] font-bold px-3 py-1.5 rounded-full border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-                    >
-                      {name}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <div className="flex flex-wrap gap-2 mt-2">
-                {participants.map(p => (
-                  <span key={p} className="bg-primary/10 text-primary text-[10px] font-bold px-3 py-1.5 rounded-full border border-primary/20 flex items-center gap-1.5">
-                    {p}
-                    <button onClick={() => removeParticipant(p)}><X size={10} /></button>
-                  </span>
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
+              <Users size={12} /> Participantes
+            </label>
+            <div className="flex gap-2">
+              <input 
+                type="text" 
+                placeholder="Buscar usuário cadastrado"
+                value={participantInput}
+                onChange={(e) => {
+                  setParticipantInput(e.target.value);
+                  if (participantError) {
+                    setParticipantError('');
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addParticipant();
+                  }
+                }}
+                className="flex-1 min-w-0 bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-sm focus:outline-none focus:border-primary transition-all"
+              />
+              <button 
+                onClick={addParticipant}
+                disabled={!participantNameMap.has(normalizeText(participantInput))}
+                className="size-12 shrink-0 bg-primary/10 text-primary border border-primary/20 rounded-2xl flex items-center justify-center disabled:opacity-50"
+              >
+                <Plus size={20} />
+              </button>
+            </div>
+            {isLoadingParticipantSuggestions && (
+              <p className="text-[11px] text-slate-400">Carregando usuários da plataforma...</p>
+            )}
+            {!isLoadingParticipantSuggestions && participantSuggestions.length === 0 && (
+              <p className="text-[11px] text-slate-400">Nenhum usuário da plataforma disponível para seleção.</p>
+            )}
+            {participantError && (
+              <p className="text-[11px] text-red-300">{participantError}</p>
+            )}
+            {filteredSuggestions.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {filteredSuggestions.map(name => (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => addParticipantByName(name)}
+                    className="text-[10px] font-bold px-3 py-1.5 rounded-full border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                  >
+                    {name}
+                  </button>
                 ))}
               </div>
+            )}
+            <div className="flex flex-wrap gap-2 mt-2">
+              {participants.map(p => (
+                <span key={p} className="bg-primary/10 text-primary text-[10px] font-bold px-3 py-1.5 rounded-full border border-primary/20 flex items-center gap-1.5">
+                  {p}
+                  <button onClick={() => removeParticipant(p)}><X size={10} /></button>
+                </span>
+              ))}
             </div>
-          ) : (
-            <div className="rounded-2xl border border-primary/20 bg-primary/5 p-3">
-              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Conquista</p>
-              <p className="text-sm font-bold text-primary mt-1">{currentUser.name}</p>
-            </div>
-          )}
+          </div>
 
           {/* Wikiloc URL */}
           <div className="space-y-1.5">
@@ -2120,9 +2129,7 @@ function CompletionModal({
           <button 
             onClick={() => onSave({
               date: formatISOToBRDate(date),
-              participants: isAdmin
-                ? participants
-                : [resolveParticipantDisplayName(currentUser.name, participantNameMap) || currentUser.name],
+              participants,
               wikilocUrl,
             })}
             className="flex-1 h-12 rounded-2xl bg-primary text-background-dark font-bold text-sm"
