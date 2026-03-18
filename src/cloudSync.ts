@@ -8,7 +8,7 @@ const SUPABASE_PUBLIC_KEY = String(
 ).trim();
 const SUPABASE_ANON_JWT = String(import.meta.env.VITE_SUPABASE_ANON_KEY ?? '').trim();
 const SUPABASE_URL = RAW_SUPABASE_URL.replace(/\/+$/, '');
-const REQUEST_TIMEOUT_MS = 8000;
+const REQUEST_TIMEOUT_MS = 15000;
 
 const hasCloudConfig = Boolean(SUPABASE_URL && SUPABASE_PUBLIC_KEY);
 
@@ -226,13 +226,15 @@ const parseSnapshotRanges = (payload: unknown): MountainRange[] | null => {
 
 const looksLikeJwt = (value: string) => /^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$/.test(value);
 
-const buildRequestHeaders = () => {
+const buildRequestHeaders = async () => {
   const headers: Record<string, string> = {
     apikey: SUPABASE_PUBLIC_KEY,
     'Content-Type': 'application/json',
   };
 
-  const sessionAccessToken = readStoredAuthSession()?.access_token;
+  const sessionAccessToken =
+    (await getValidStoredAuthSession())?.access_token ??
+    readStoredAuthSession()?.access_token;
 
   // Prefer user session token when available (authenticated role).
   if (typeof sessionAccessToken === 'string' && looksLikeJwt(sessionAccessToken)) {
@@ -284,7 +286,7 @@ export const loadRangesFromCloud = async (): Promise<CloudLoadResult> => {
       `${SUPABASE_URL}/rest/v1/rpc/get_snapshot`,
       {
         method: 'POST',
-        headers: buildRequestHeaders(),
+        headers: await buildRequestHeaders(),
         body: '{}',
       },
     );
@@ -321,7 +323,7 @@ export const saveRangesToCloud = async (ranges: MountainRange[]): Promise<void> 
     const response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/replace_snapshot`, {
       method: 'POST',
       headers: {
-        ...buildRequestHeaders(),
+        ...(await buildRequestHeaders()),
         Prefer: 'return=minimal',
       },
       body: JSON.stringify({ payload: ranges }),
@@ -749,7 +751,7 @@ export const upsertCloudUser = async (payload: {
   try {
     const response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/upsert_app_user`, {
       method: 'POST',
-      headers: buildRequestHeaders(),
+      headers: await buildRequestHeaders(),
       body: JSON.stringify({
         p_auth_user_id: payload.authUserId,
         p_email: payload.email,
@@ -777,7 +779,7 @@ export const listCloudUsers = async (): Promise<CloudAppUser[] | null> => {
   try {
     const response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/list_app_users`, {
       method: 'POST',
-      headers: buildRequestHeaders(),
+      headers: await buildRequestHeaders(),
       body: '{}',
     });
 
@@ -800,7 +802,7 @@ export const getMyCloudUser = async (): Promise<CloudAppUser | null> => {
   try {
     const response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/get_my_app_user`, {
       method: 'POST',
-      headers: buildRequestHeaders(),
+      headers: await buildRequestHeaders(),
       body: '{}',
     });
 
@@ -827,7 +829,7 @@ export const listParticipantDirectory = async (): Promise<CloudParticipantUser[]
   try {
     const response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/list_participant_directory`, {
       method: 'POST',
-      headers: buildRequestHeaders(),
+      headers: await buildRequestHeaders(),
       body: '{}',
     });
 
@@ -869,9 +871,9 @@ export const upsertCloudCompletion = async (payload: {
   }
 
   try {
-    const response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/upsert_completion`, {
+    const requestInit: RequestInit = {
       method: 'POST',
-      headers: buildRequestHeaders(),
+      headers: await buildRequestHeaders(),
       body: JSON.stringify({
         p_peak_id: payload.peakId,
         p_completion_id: payload.completionId ?? null,
@@ -879,7 +881,14 @@ export const upsertCloudCompletion = async (payload: {
         p_participants: payload.participants,
         p_wikiloc_url: payload.wikilocUrl ?? null,
       }),
-    });
+    };
+
+    let response: Response;
+    try {
+      response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/upsert_completion`, requestInit);
+    } catch {
+      response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_completion`, requestInit);
+    }
 
     if (!response.ok) {
       return {
@@ -918,7 +927,7 @@ export const deleteCloudCompletion = async (completionId: string): Promise<boole
   try {
     const response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/delete_completion`, {
       method: 'POST',
-      headers: buildRequestHeaders(),
+      headers: await buildRequestHeaders(),
       body: JSON.stringify({
         p_completion_id: completionId,
       }),

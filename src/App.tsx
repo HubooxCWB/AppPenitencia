@@ -169,6 +169,34 @@ const resolveParticipantDisplayName = (
   return participantNameMap.get(normalizeText(trimmedParticipant)) ?? trimmedParticipant;
 };
 
+const buildUserIdentityKeys = (
+  currentUser?: User | null,
+  participantNameMap?: Map<string, string>,
+) => {
+  if (!currentUser) {
+    return [];
+  }
+
+  const email = String(currentUser.email ?? '').trim().toLowerCase();
+  const emailLocalPart = email.includes('@') ? email.split('@')[0] ?? '' : '';
+  const aliases = [
+    currentUser.name,
+    currentUser.username,
+    email,
+    emailLocalPart,
+  ];
+
+  if (participantNameMap) {
+    aliases.push(
+      resolveParticipantDisplayName(currentUser.name, participantNameMap),
+      resolveParticipantDisplayName(currentUser.username, participantNameMap),
+      resolveParticipantDisplayName(emailLocalPart, participantNameMap),
+    );
+  }
+
+  return Array.from(new Set(aliases.map(alias => normalizeText(alias)).filter(Boolean)));
+};
+
 const sanitizeParticipants = (
   participants: string[],
   participantNameMap: Map<string, string>,
@@ -1192,9 +1220,7 @@ export default function App() {
   }, [cloudSyncEnabled, isAuthBootstrapping, user]);
 
   const isAdminUser = user?.role === 'ADMIN';
-  const currentUserKeys = Array.from(
-    new Set([normalizeText(user?.name), normalizeText(user?.username)].filter(Boolean)),
-  );
+  const currentUserKeys = buildUserIdentityKeys(user, participantNameMap);
   const isCompletionOwnedByCurrentUser = (completion?: PeakCompletion | null) => {
     if (!completion) {
       return false;
@@ -1217,29 +1243,26 @@ export default function App() {
       currentUserKeys.includes(normalizeText(participant)),
     );
   };
-  const handleLogin = (userData: User, options?: { requiresPasswordChange?: boolean }) => {
-    setUser(userData);
+  const handleLogin = async (userData: User, options?: { requiresPasswordChange?: boolean }) => {
+    let resolvedUser = userData;
+
+    if (cloudSyncEnabled && userData.email) {
+      const syncedUser = await upsertCloudUser({
+        authUserId: userData.id,
+        email: userData.email,
+        username: userData.username,
+        displayName: userData.name,
+        avatarUrl: userData.avatar,
+      });
+
+      if (syncedUser) {
+        resolvedUser = mergeUserWithCloudDirectory(userData, syncedUser);
+      }
+    }
+
+    setUser(resolvedUser);
     setIsPasswordChangeRequired(Boolean(options?.requiresPasswordChange));
     setCurrentScreen(options?.requiresPasswordChange ? 'LOGIN' : 'HOME');
-    if (cloudSyncEnabled && userData.email) {
-      void (async () => {
-        const syncedUser = await upsertCloudUser({
-          authUserId: userData.id,
-          email: userData.email,
-          username: userData.username,
-          displayName: userData.name,
-          avatarUrl: userData.avatar,
-        });
-
-        if (syncedUser) {
-          setUser(currentUser => (
-            currentUser && currentUser.id === userData.id
-              ? mergeUserWithCloudDirectory(currentUser, syncedUser)
-              : currentUser
-          ));
-        }
-      })();
-    }
   };
 
   const handleLogout = () => {
@@ -1847,6 +1870,7 @@ export default function App() {
           <HomeScreen
             user={user}
             mountainRanges={mountainRanges}
+            participantNameMap={participantNameMap}
             onViewAllSerras={() => setCurrentScreen('SERRAS')}
             onOpenProfile={() => setCurrentScreen('PERFIL')}
           />
@@ -1885,6 +1909,7 @@ export default function App() {
             user={user}
             mountainRanges={mountainRanges}
             isCloudEnabled={cloudSyncEnabled}
+            participantNameMap={participantNameMap}
             onUpdateProfile={handleProfileUpdate}
             onExportBackup={exportBackupToFile}
             onImportBackup={importBackupFromText}
@@ -1896,6 +1921,7 @@ export default function App() {
           <HomeScreen
             user={user}
             mountainRanges={mountainRanges}
+            participantNameMap={participantNameMap}
             onViewAllSerras={() => setCurrentScreen('SERRAS')}
             onOpenProfile={() => setCurrentScreen('PERFIL')}
           />
@@ -2555,6 +2581,7 @@ function PerfilScreen({
   user,
   mountainRanges,
   isCloudEnabled,
+  participantNameMap,
   onUpdateProfile,
   onExportBackup,
   onImportBackup,
@@ -2563,6 +2590,7 @@ function PerfilScreen({
   user: User,
   mountainRanges: MountainRange[],
   isCloudEnabled: boolean,
+  participantNameMap: Map<string, string>,
   onUpdateProfile: (updates: { username: string; avatar: string }) => void,
   onExportBackup: () => void,
   onImportBackup: (backupText: string) => { success: boolean; message: string },
@@ -2578,17 +2606,17 @@ function PerfilScreen({
   const [profileError, setProfileError] = useState('');
   const [profileSuccessMessage, setProfileSuccessMessage] = useState('');
   const [isProfileEditorOpen, setIsProfileEditorOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [passwordError, setPasswordError] = useState('');
   const [passwordSuccessMessage, setPasswordSuccessMessage] = useState('');
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
   const [isPasswordSectionOpen, setIsPasswordSectionOpen] = useState(false);
-  const userKeys = Array.from(
-    new Set([normalizeText(user.name), normalizeText(user.username)].filter(Boolean)),
-  );
+  const userKeys = buildUserIdentityKeys(user, participantNameMap);
   const isUserParticipant = (participants: string[] | undefined) => {
     if (!Array.isArray(participants) || participants.length === 0) {
       return true;
@@ -2710,8 +2738,13 @@ function PerfilScreen({
     setPasswordError('');
     setPasswordSuccessMessage('');
 
-    if (!newPassword || !confirmPassword) {
-      setPasswordError('Preencha a nova senha e a confirmação.');
+    if (!user.email?.trim()) {
+      setPasswordError('Não foi possível validar sua sessão. Saia e entre novamente antes de trocar a senha.');
+      return;
+    }
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      setPasswordError('Preencha a senha atual, a nova senha e a confirmação.');
       return;
     }
 
@@ -2727,12 +2760,23 @@ function PerfilScreen({
 
     setIsUpdatingPassword(true);
     try {
+      const signInResult = await signInWithSupabaseAuth({
+        email: user.email,
+        password: currentPassword,
+      });
+
+      if ('message' in signInResult) {
+        setPasswordError('Senha atual incorreta. Confira e tente novamente.');
+        return;
+      }
+
       const result = await updateSupabaseAuthPassword(newPassword);
       if ('message' in result) {
         setPasswordError(result.message);
         return;
       }
 
+      setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
       setPasswordSuccessMessage('Senha atualizada com sucesso.');
@@ -2766,12 +2810,12 @@ function PerfilScreen({
   }, [isCloudEnabled, user.role]);
 
   return (
-    <div className="p-6 pt-8 space-y-8">
-      <header className="flex items-center justify-between">
+    <div className="w-full min-w-0 overflow-x-hidden p-4 pt-6 sm:p-6 sm:pt-8 space-y-8">
+      <header className="flex min-w-0 items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">Meu Perfil</h1>
       </header>
 
-      <div className="flex flex-col items-center space-y-4">
+      <div className="flex min-w-0 flex-col items-center space-y-4">
         <div className="relative">
           <div className="size-32 rounded-full border-4 border-primary p-1">
             <img 
@@ -2791,14 +2835,14 @@ function PerfilScreen({
             <Pencil size={16} />
           </button>
         </div>
-        <div className="text-center">
-          <h2 className="text-xl font-bold">{user.name}</h2>
+        <div className="min-w-0 text-center">
+          <h2 className="break-words text-xl font-bold">{user.name}</h2>
           <button
             type="button"
             onClick={() => setIsProfileEditorOpen(true)}
-            className="inline-flex items-center gap-2 text-slate-400 text-sm hover:text-primary transition-colors"
+            className="inline-flex max-w-full items-center gap-2 text-slate-400 text-sm hover:text-primary transition-colors"
           >
-            <span>@{user.username}</span>
+            <span className="truncate">@{user.username}</span>
             <Pencil size={14} />
           </button>
           <div className="mt-2 inline-flex px-3 py-1 bg-primary/10 text-primary text-[10px] font-bold rounded-full border border-primary/20 uppercase tracking-widest">
@@ -2904,6 +2948,33 @@ function PerfilScreen({
         {isPasswordSectionOpen && (
           <div className="space-y-3 pt-2 border-t border-white/10">
             <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Senha atual</label>
+              <div className="relative">
+                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={18} />
+                <input
+                  type={showCurrentPassword ? 'text' : 'password'}
+                  autoComplete="current-password"
+                  value={currentPassword}
+                  onChange={(event) => {
+                    setCurrentPassword(event.target.value);
+                    setPasswordError('');
+                    setPasswordSuccessMessage('');
+                  }}
+                  placeholder="Digite sua senha atual"
+                  className="w-full min-w-0 bg-primary/5 border border-primary/20 rounded-2xl h-12 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowCurrentPassword(prev => !prev)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-primary/60 hover:text-primary transition-colors p-1"
+                  aria-label={showCurrentPassword ? 'Ocultar senha atual' : 'Mostrar senha atual'}
+                  title={showCurrentPassword ? 'Ocultar senha atual' : 'Mostrar senha atual'}
+                >
+                  {showCurrentPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+            </div>
+            <div className="space-y-1.5">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Nova senha</label>
               <div className="relative">
                 <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={18} />
@@ -2917,7 +2988,7 @@ function PerfilScreen({
                     setPasswordSuccessMessage('');
                   }}
                   placeholder="Digite a nova senha"
-                  className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all"
+                  className="w-full min-w-0 bg-primary/5 border border-primary/20 rounded-2xl h-12 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all"
                 />
                 <button
                   type="button"
@@ -2944,7 +3015,7 @@ function PerfilScreen({
                     setPasswordSuccessMessage('');
                   }}
                   placeholder="Confirme a nova senha"
-                  className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all"
+                  className="w-full min-w-0 bg-primary/5 border border-primary/20 rounded-2xl h-12 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all"
                 />
                 <button
                   type="button"
@@ -3016,11 +3087,11 @@ function PerfilScreen({
               ) : (
                 <div className="space-y-2">
                   {registeredUsers.map(cloudUser => (
-                    <div key={cloudUser.username} className="flex items-center justify-between text-xs">
-                      <span className="text-slate-200">
+                    <div key={cloudUser.username} className="flex min-w-0 items-center justify-between gap-3 text-xs">
+                      <span className="min-w-0 truncate text-slate-200">
                         {cloudUser.display_name} <span className="text-slate-500">@{cloudUser.username}</span>
                       </span>
-                      <span className={`font-bold ${cloudUser.role === 'ADMIN' ? 'text-primary' : 'text-slate-400'}`}>
+                      <span className={`shrink-0 font-bold ${cloudUser.role === 'ADMIN' ? 'text-primary' : 'text-slate-400'}`}>
                         {cloudUser.role}
                       </span>
                     </div>
@@ -3362,19 +3433,28 @@ function PeakFormModal({
 function HomeScreen({
   user,
   mountainRanges,
+  participantNameMap,
   onViewAllSerras,
   onOpenProfile,
 }: {
   user: User,
   mountainRanges: MountainRange[],
+  participantNameMap: Map<string, string>,
   onViewAllSerras: () => void,
   onOpenProfile: () => void,
 }) {
+  const currentUserKeys = buildUserIdentityKeys(user, participantNameMap);
+  const isPeakCompletedByUser = (peak: Peak) =>
+    peak.completions.some(completion =>
+      Array.isArray(completion.participants) &&
+      completion.participants.some(participant => currentUserKeys.includes(normalizeText(participant))),
+    );
+
   const rangePicoStats = mountainRanges.map(range => {
     const peaks = Array.isArray(range.peaks) ? range.peaks : [];
     const picoPeaks = peaks.filter(peak => resolvePeakLocalType(peak) === 'pico');
     const totalPicos = picoPeaks.length;
-    const completedPicos = picoPeaks.filter(peak => peak.completions.length > 0).length;
+    const completedPicos = picoPeaks.filter(isPeakCompletedByUser).length;
 
     return {
       id: range.id,
@@ -3431,11 +3511,11 @@ function HomeScreen({
     })[0] ?? null;
 
   return (
-    <div className="p-6 pt-8 space-y-8">
+    <div className="w-full min-w-0 overflow-x-hidden p-4 pt-6 sm:p-6 sm:pt-8 space-y-8">
       {/* Header */}
-      <header className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="size-12 rounded-full border-2 border-primary overflow-hidden p-0.5">
+      <header className="flex min-w-0 items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="size-12 shrink-0 rounded-full border-2 border-primary overflow-hidden p-0.5">
             <img 
               src={user.avatar}
               alt={user.name}
@@ -3443,9 +3523,9 @@ function HomeScreen({
               referrerPolicy="no-referrer"
             />
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="text-[10px] font-bold text-primary/80 uppercase tracking-widest">Bem-vindo de volta,</p>
-            <h1 className="text-xl font-bold leading-tight">Olá, {user.name}!</h1>
+            <h1 className="break-words text-xl font-bold leading-tight">Olá, {user.name}!</h1>
           </div>
         </div>
         <button
@@ -3460,16 +3540,16 @@ function HomeScreen({
       </header>
 
       {/* Dashboard */}
-      <section className="bg-neutral-forest/40 rounded-2xl p-6 border border-primary/20 backdrop-blur-sm">
-        <div className="mb-6 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-bold flex items-center gap-2">
+      <section className="w-full min-w-0 overflow-hidden bg-neutral-forest/40 rounded-2xl p-4 sm:p-6 border border-primary/20 backdrop-blur-sm">
+        <div className="mb-6 flex min-w-0 items-center justify-between gap-3">
+          <h2 className="min-w-0 text-lg font-bold flex items-center gap-2">
             <LayoutDashboard size={20} className="text-primary" />
-            Picos Conquistados
+            <span className="truncate">Picos Conquistados</span>
           </h2>
           <button
             type="button"
             onClick={onViewAllSerras}
-            className="text-primary text-xs font-bold uppercase tracking-widest hover:text-primary/80 transition-colors"
+            className="shrink-0 text-primary text-xs font-bold uppercase tracking-widest hover:text-primary/80 transition-colors"
           >
             Ver mais
           </button>
@@ -3512,7 +3592,7 @@ function HomeScreen({
 
       <section className="space-y-4">
         <h2 className="text-lg font-bold">Estatísticas do Trilheiro</h2>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <HikerStatisticCard
             icon="🏔"
             label="Picos"
@@ -3565,9 +3645,9 @@ function ProgressItem({ label, current, total, key }: { label: string, current: 
   const percentage = total > 0 ? (current / total) * 100 : 0;
   return (
     <div className="space-y-1.5">
-      <div className="flex justify-between text-xs font-bold">
-        <span className="text-slate-300">{label}</span>
-        <span className="text-primary">{current}/{total}</span>
+      <div className="flex min-w-0 items-start justify-between gap-3 text-xs font-bold">
+        <span className="min-w-0 break-words text-slate-300">{label}</span>
+        <span className="shrink-0 text-primary">{current}/{total}</span>
       </div>
       <div className="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-white/5">
         <motion.div 
@@ -3593,11 +3673,11 @@ function HikerStatisticCard({
   total: number;
 }) {
   return (
-    <div className="bg-neutral-forest/40 rounded-2xl p-4 border border-white/10">
+    <div className="min-w-0 bg-neutral-forest/40 rounded-2xl p-4 border border-white/10">
       <div className="text-2xl leading-none mb-3" aria-hidden>
         {icon}
       </div>
-      <p className="text-sm font-bold text-slate-200">{label}</p>
+      <p className="break-words text-sm font-bold text-slate-200">{label}</p>
       <div className="mt-1 flex items-end gap-1.5">
         <span className="text-xl font-black text-primary leading-none">{completed}</span>
         <span className="text-sm text-slate-400 leading-none mb-0.5">/ {total}</span>
@@ -3908,10 +3988,10 @@ function MountainRangeAccordion({
                                   <div
                                     key={comp.id}
                                     className={`relative rounded-lg bg-black/20 p-2 pr-8 group transition-colors ${
-                                      canManageCatalog ? 'cursor-pointer hover:bg-black/30' : 'cursor-default'
+                                      canManageCatalog || canDeleteCompletion(comp) ? 'cursor-pointer hover:bg-black/30' : 'cursor-default'
                                     }`}
                                     onClick={() => {
-                                      if (canManageCatalog) {
+                                      if (canManageCatalog || canDeleteCompletion(comp)) {
                                         onTogglePeak(range.id, peak.id, comp.id);
                                       }
                                     }}
