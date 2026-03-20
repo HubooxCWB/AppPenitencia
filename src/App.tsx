@@ -34,7 +34,11 @@ import {
   Trash2,
   X,
   Download,
-  Upload
+  Upload,
+  AlertTriangle,
+  CloudOff,
+  RefreshCw,
+  Wrench
 } from 'lucide-react';
 import { 
   Screen, 
@@ -71,6 +75,7 @@ import {
 const AUTH_STORAGE_KEY = 'penitencia-auth-user';
 const MOUNTAIN_RANGES_STORAGE_KEY = 'penitencia-mountain-ranges';
 const MOUNTAIN_RANGES_BACKUP_STORAGE_KEY = 'penitencia-mountain-ranges-backup';
+const PARTICIPANT_DIRECTORY_STORAGE_KEY = 'penitencia-participant-directory';
 const normalizeText = (value: unknown) =>
   String(value ?? '')
     .normalize('NFD')
@@ -196,6 +201,66 @@ const buildUserIdentityKeys = (
 
   return Array.from(new Set(aliases.map(alias => normalizeText(alias)).filter(Boolean)));
 };
+
+const doesCompletionBelongToUser = (
+  completion: PeakCompletion,
+  currentUser: User | null | undefined,
+  userKeys: string[],
+) => {
+  if (!currentUser) {
+    return false;
+  }
+
+  if (currentUser.role === 'ADMIN') {
+    return true;
+  }
+
+  if (completion.ownerUserId && completion.ownerUserId === currentUser.id) {
+    return true;
+  }
+
+  if (userKeys.length === 0 || !Array.isArray(completion.participants)) {
+    return false;
+  }
+
+  return completion.participants.some(participant => userKeys.includes(normalizeText(participant)));
+};
+
+const getVisibleCompletionsForUser = (
+  peak: Peak,
+  currentUser: User | null | undefined,
+  participantNameMap: Map<string, string>,
+) => {
+  const userKeys = buildUserIdentityKeys(currentUser, participantNameMap);
+  return peak.completions.filter(completion => doesCompletionBelongToUser(completion, currentUser, userKeys));
+};
+
+const scopeMountainRangesForUser = (
+  ranges: MountainRange[],
+  currentUser: User | null | undefined,
+  participantNameMap: Map<string, string>,
+) =>
+  ranges.map(range => {
+    const peaks = (Array.isArray(range.peaks) ? range.peaks : []).map(peak => ({
+      ...peak,
+      completions: getVisibleCompletionsForUser(peak, currentUser, participantNameMap),
+    }));
+    const totalTargetPeaks = peaks.filter(peak => {
+      const localType = resolvePeakLocalType(peak);
+      return localType === 'pico' || localType === 'morro';
+    }).length;
+    const completedTargetPeaks = peaks.filter(peak => {
+      const localType = resolvePeakLocalType(peak);
+      return (localType === 'pico' || localType === 'morro') && peak.completions.length > 0;
+    }).length;
+
+    return {
+      ...range,
+      peaks,
+      totalPeaks: totalTargetPeaks,
+      completedPeaks: completedTargetPeaks,
+    };
+  });
 
 const sanitizeParticipants = (
   participants: string[],
@@ -966,6 +1031,36 @@ const getPreferredStoredRanges = (): MountainRange[] | null => {
   return null;
 };
 
+const readStoredParticipantDirectory = (): CloudParticipantUser[] => {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(PARTICIPANT_DIRECTORY_STORAGE_KEY);
+    if (!rawValue) {
+      return [];
+    }
+
+    const parsedValue = JSON.parse(rawValue) as unknown;
+    return Array.isArray(parsedValue) ? (parsedValue as CloudParticipantUser[]) : [];
+  } catch {
+    return [];
+  }
+};
+
+const persistParticipantDirectory = (rows: CloudParticipantUser[]) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(PARTICIPANT_DIRECTORY_STORAGE_KEY, JSON.stringify(rows));
+  } catch {
+    // Ignore cache write failures and keep the in-memory list.
+  }
+};
+
 export default function App() {
   const cloudSyncEnabled = isCloudSyncEnabled();
   const [user, setUser] = useState<User | null>(() => {
@@ -991,7 +1086,9 @@ export default function App() {
   const [isAuthBootstrapping, setIsAuthBootstrapping] = useState(cloudSyncEnabled);
   const [isPasswordChangeRequired, setIsPasswordChangeRequired] = useState(false);
   const [isCloudBootstrapping, setIsCloudBootstrapping] = useState(false);
-  const [registeredUsers, setRegisteredUsers] = useState<CloudParticipantUser[]>([]);
+  const [cloudBootstrapRetryKey, setCloudBootstrapRetryKey] = useState(0);
+  const [cloudSyncErrorStatus, setCloudSyncErrorStatus] = useState<number | null>(null);
+  const [registeredUsers, setRegisteredUsers] = useState<CloudParticipantUser[]>(() => readStoredParticipantDirectory());
   const [isLoadingRegisteredUsers, setIsLoadingRegisteredUsers] = useState(false);
   const hasInitializedMountainRangesPersistence = useRef(false);
   const hasAttemptedCloudHydration = useRef(false);
@@ -1003,7 +1100,8 @@ export default function App() {
     rangeId: string, 
     peak: Peak, 
     completionId?: string,
-    initialData?: { date: string, participants: string[], wikilocUrl?: string }
+    initialData?: { date: string, participants: string[], wikilocUrl?: string },
+    isReadOnly?: boolean,
   } | null>(null);
   const participantNameMap = buildParticipantNameMap(registeredUsers, user);
   const participantAvatarMap = buildParticipantAvatarMap(registeredUsers, user);
@@ -1024,6 +1122,7 @@ export default function App() {
   useEffect(() => {
     if (!cloudSyncEnabled) {
       setIsAuthBootstrapping(false);
+      setCloudSyncErrorStatus(null);
       return;
     }
 
@@ -1072,7 +1171,7 @@ export default function App() {
 
   useEffect(() => {
     if (!cloudSyncEnabled || !user) {
-      setRegisteredUsers([]);
+      setRegisteredUsers(readStoredParticipantDirectory());
       setIsLoadingRegisteredUsers(false);
       return;
     }
@@ -1083,7 +1182,14 @@ export default function App() {
       setIsLoadingRegisteredUsers(true);
       const rows = await listParticipantDirectory();
       if (!isCancelled) {
-        setRegisteredUsers(Array.isArray(rows) ? rows : []);
+        if (Array.isArray(rows) && rows.length > 0) {
+          setRegisteredUsers(rows);
+          persistParticipantDirectory(rows);
+        } else {
+          setRegisteredUsers(currentRows => (
+            currentRows.length > 0 ? currentRows : readStoredParticipantDirectory()
+          ));
+        }
         setIsLoadingRegisteredUsers(false);
       }
     };
@@ -1136,6 +1242,7 @@ export default function App() {
     // Wait for login so loadRangesFromCloud uses the session token (Vercel has session; localhost was loading before login with anon).
     if (!user) {
       hasAttemptedCloudHydration.current = false;
+      setCloudSyncErrorStatus(null);
       return;
     }
 
@@ -1165,7 +1272,11 @@ export default function App() {
           const normalizedCloudRanges = normalizeMountainRanges(cloudLoad.ranges);
           setMountainRanges(normalizedCloudRanges);
           hasHydratedCloudRanges.current = true;
+          setCloudSyncErrorStatus(null);
           setIsCloudBootstrapping(false);
+          setCurrentScreen(current =>
+            current === 'MAINTENANCE' || current === 'CLOUD_SYNC_ERROR' ? 'HOME' : current,
+          );
           return;
         }
 
@@ -1173,9 +1284,27 @@ export default function App() {
           const localRanges = getPreferredStoredRanges();
           if (localRanges) {
             setMountainRanges(normalizeMountainRanges(localRanges));
+            hasHydratedCloudRanges.current = true;
+            setCloudSyncErrorStatus(cloudLoad.httpStatus ?? null);
+            setIsCloudBootstrapping(false);
+            return;
           }
+
+          if (mountainRanges.length > 0) {
+            hasHydratedCloudRanges.current = true;
+            setCloudSyncErrorStatus(cloudLoad.httpStatus ?? null);
+            setIsCloudBootstrapping(false);
+            return;
+          }
+
           hasHydratedCloudRanges.current = true;
+          setCloudSyncErrorStatus(cloudLoad.httpStatus ?? null);
           setIsCloudBootstrapping(false);
+          setCurrentScreen(
+            cloudLoad.httpStatus === 502 || cloudLoad.httpStatus === 503 || cloudLoad.httpStatus === 504
+              ? 'MAINTENANCE'
+              : 'CLOUD_SYNC_ERROR',
+          );
           return;
         }
 
@@ -1185,6 +1314,7 @@ export default function App() {
           const normalizedLocalRanges = normalizeMountainRanges(localRanges);
           setMountainRanges(normalizedLocalRanges);
           hasHydratedCloudRanges.current = true;
+          setCloudSyncErrorStatus(null);
           setIsCloudBootstrapping(false);
           if (user.role === 'ADMIN') {
             void saveRangesToCloud(normalizedLocalRanges);
@@ -1195,6 +1325,7 @@ export default function App() {
         const normalizedMockRanges = normalizeMountainRanges(MOCK_MOUNTAIN_RANGES);
         setMountainRanges(normalizedMockRanges);
         hasHydratedCloudRanges.current = true;
+        setCloudSyncErrorStatus(null);
         setIsCloudBootstrapping(false);
         if (user.role === 'ADMIN') {
           void saveRangesToCloud(normalizedMockRanges);
@@ -1204,9 +1335,23 @@ export default function App() {
           const localRanges = getPreferredStoredRanges();
           if (localRanges) {
             setMountainRanges(normalizeMountainRanges(localRanges));
+            hasHydratedCloudRanges.current = true;
+            setCloudSyncErrorStatus(null);
+            setIsCloudBootstrapping(false);
+            return;
           }
+
+          if (mountainRanges.length > 0) {
+            hasHydratedCloudRanges.current = true;
+            setCloudSyncErrorStatus(null);
+            setIsCloudBootstrapping(false);
+            return;
+          }
+
           hasHydratedCloudRanges.current = true;
+          setCloudSyncErrorStatus(null);
           setIsCloudBootstrapping(false);
+          setCurrentScreen('CLOUD_SYNC_ERROR');
         }
       }
     };
@@ -1217,7 +1362,7 @@ export default function App() {
       isCancelled = true;
       window.clearTimeout(bootstrapWatchdog);
     };
-  }, [cloudSyncEnabled, isAuthBootstrapping, user]);
+  }, [cloudSyncEnabled, isAuthBootstrapping, user, cloudBootstrapRetryKey, mountainRanges.length]);
 
   const isAdminUser = user?.role === 'ADMIN';
   const currentUserKeys = buildUserIdentityKeys(user, participantNameMap);
@@ -1243,6 +1388,9 @@ export default function App() {
       currentUserKeys.includes(normalizeText(participant)),
     );
   };
+  const canViewCompletion = (completion?: PeakCompletion | null) =>
+    Boolean(completion && doesCompletionBelongToUser(completion, user, currentUserKeys));
+
   const handleLogin = async (userData: User, options?: { requiresPasswordChange?: boolean }) => {
     let resolvedUser = userData;
 
@@ -1279,6 +1427,18 @@ export default function App() {
     setCurrentScreen('HOME');
   };
 
+  const handleRetryCloudBootstrap = () => {
+    hasAttemptedCloudHydration.current = false;
+    hasHydratedCloudRanges.current = false;
+    setCloudSyncErrorStatus(null);
+    setCurrentScreen('HOME');
+    setCloudBootstrapRetryKey(prev => prev + 1);
+  };
+
+  const handleContinueOffline = () => {
+    setCurrentScreen('HOME');
+  };
+
   const handleProfileUpdate = async (updates: { username: string; avatar: string }) => {
     if (!user) {
       return;
@@ -1306,7 +1466,7 @@ export default function App() {
           ...nextUser,
           name: authProfileResult.profile.displayName,
           username: authProfileResult.profile.username,
-          avatar: authProfileResult.profile.avatarUrl,
+          avatar: nextUser.avatar,
           role: authProfileResult.profile.role,
         });
       }
@@ -1343,13 +1503,14 @@ export default function App() {
 
     if (peak) {
       const completion = completionId ? peak.completions.find(c => c.id === completionId) : null;
-      if (completionId && !isAdminUser && !isCompletionOwnedByCurrentUser(completion)) {
+      if (completionId && !canViewCompletion(completion)) {
         return;
       }
       setIsCompletingPeak({ 
         rangeId, 
         peak, 
         completionId,
+        isReadOnly: Boolean(completionId && !isAdminUser && !isCompletionOwnedByCurrentUser(completion)),
         initialData: completion ? {
           date: completion.date,
           participants: completion.participants,
@@ -1863,6 +2024,27 @@ export default function App() {
     );
   }
 
+  if (currentScreen === 'MAINTENANCE') {
+    return (
+      <MaintenanceScreen
+        onRetry={handleRetryCloudBootstrap}
+        onContinueOffline={handleContinueOffline}
+        isRetrying={isCloudBootstrapping}
+      />
+    );
+  }
+
+  if (currentScreen === 'CLOUD_SYNC_ERROR') {
+    return (
+      <CloudSyncErrorScreen
+        onRetry={handleRetryCloudBootstrap}
+        onContinueOffline={handleContinueOffline}
+        isRetrying={isCloudBootstrapping}
+        statusCode={cloudSyncErrorStatus}
+      />
+    );
+  }
+
   const renderScreen = () => {
     switch (currentScreen) {
       case 'HOME':
@@ -1879,6 +2061,7 @@ export default function App() {
         return (
           <SerrasScreen 
             user={user}
+            participantNameMap={participantNameMap}
             mountainRanges={mountainRanges} 
             onTogglePeak={togglePeak} 
             onDeleteCompletion={deleteCompletion}
@@ -1889,6 +2072,7 @@ export default function App() {
             onDeleteRange={deleteMountainRange}
             canManageCatalog={isAdminUser}
             canDeleteCompletion={(completion) => isAdminUser || isCompletionOwnedByCurrentUser(completion)}
+            canViewCompletion={(completion) => isAdminUser || canViewCompletion(completion)}
             onBack={() => setCurrentScreen('HOME')}
           />
         );
@@ -1930,9 +2114,9 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-background-dark text-slate-100 font-sans w-full max-w-md mx-auto relative overflow-x-hidden shadow-2xl">
+    <div className="min-h-[100dvh] bg-background-dark text-slate-100 font-sans w-full relative overflow-x-clip">
       {/* Main Content */}
-      <main className="pb-20">
+      <main className="mx-auto w-full max-w-5xl px-0 pb-[calc(6rem+env(safe-area-inset-bottom))]">
         <AnimatePresence mode="wait">
           <motion.div
             key={currentScreen}
@@ -1986,6 +2170,7 @@ export default function App() {
           <CompletionModal 
             peak={isCompletingPeak.peak}
             initialData={isCompletingPeak.initialData}
+            isReadOnly={isCompletingPeak.isReadOnly}
             participantSuggestions={participantSuggestions}
             participantNameMap={participantNameMap}
             isLoadingParticipantSuggestions={isLoadingRegisteredUsers}
@@ -2001,41 +2186,151 @@ export default function App() {
       {currentScreen === 'SERRAS' && isAdminUser && (
         <button 
           onClick={() => setIsAddingRange(true)}
-          className="fixed bottom-24 right-6 z-50 size-14 bg-primary text-background-dark rounded-full flex items-center justify-center shadow-lg shadow-primary/20 hover:scale-105 transition-transform active:scale-95"
+          className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 z-50 size-14 bg-primary text-background-dark rounded-full flex items-center justify-center shadow-lg shadow-primary/20 hover:scale-105 transition-transform active:scale-95 sm:right-6"
         >
           <Plus size={32} strokeWidth={3} />
         </button>
       )}
 
       {/* Bottom Navigation */}
-      <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-black/80 backdrop-blur-xl border-t border-white/5 z-40 px-6 pb-4 pt-2">
-        <div className="flex justify-between items-center">
-          <NavButton 
-            active={currentScreen === 'HOME'} 
-            onClick={() => setCurrentScreen('HOME')} 
-            icon={<HomeIcon size={24} />} 
-            label="HOME" 
-          />
-          <NavButton 
-            active={currentScreen === 'SERRAS'} 
-            onClick={() => setCurrentScreen('SERRAS')} 
-            icon={<Mountain size={24} />} 
-            label="SERRAS" 
-          />
-          <NavButton 
-            active={currentScreen === 'RANKING'} 
-            onClick={() => setCurrentScreen('RANKING')} 
-            icon={<Trophy size={24} />} 
-            label="RANKING" 
-          />
-          <NavButton 
-            active={currentScreen === 'PERFIL'} 
-            onClick={() => setCurrentScreen('PERFIL')} 
-            icon={<UserIcon size={24} />} 
-            label="PERFIL" 
-          />
+      <nav className="fixed inset-x-0 bottom-0 z-40">
+        <div className="mx-auto w-full max-w-5xl px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2 sm:px-6">
+          <div className="flex items-center justify-between rounded-[1.75rem] border border-white/8 bg-black/80 px-4 py-2 shadow-2xl backdrop-blur-xl sm:px-6">
+            <NavButton 
+              active={currentScreen === 'HOME'} 
+              onClick={() => setCurrentScreen('HOME')} 
+              icon={<HomeIcon size={24} />} 
+              label="HOME" 
+            />
+            <NavButton 
+              active={currentScreen === 'SERRAS'} 
+              onClick={() => setCurrentScreen('SERRAS')} 
+              icon={<Mountain size={24} />} 
+              label="SERRAS" 
+            />
+            <NavButton 
+              active={currentScreen === 'RANKING'} 
+              onClick={() => setCurrentScreen('RANKING')} 
+              icon={<Trophy size={24} />} 
+              label="RANKING" 
+            />
+            <NavButton 
+              active={currentScreen === 'PERFIL'} 
+              onClick={() => setCurrentScreen('PERFIL')} 
+              icon={<UserIcon size={24} />} 
+              label="PERFIL" 
+            />
+          </div>
         </div>
       </nav>
+    </div>
+  );
+}
+
+function MaintenanceScreen({
+  onRetry,
+  onContinueOffline,
+  isRetrying,
+}: {
+  onRetry: () => void;
+  onContinueOffline: () => void;
+  isRetrying?: boolean;
+}) {
+  return (
+    <div className="relative mx-auto flex min-h-[100dvh] w-full max-w-md flex-col justify-center overflow-x-hidden px-5 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(1.5rem,env(safe-area-inset-top))] sm:px-8">
+      <div className="absolute left-1/2 top-1/4 -z-10 size-72 -translate-x-1/2 rounded-full bg-primary/10 blur-[120px]" />
+
+      <div className="space-y-8 rounded-[2rem] border border-primary/15 bg-black/40 p-6 text-center shadow-2xl shadow-black/30 backdrop-blur-xl sm:p-8">
+        <div className="mx-auto flex size-20 items-center justify-center rounded-3xl border border-primary/20 bg-primary/10">
+          <Wrench size={36} className="text-primary" />
+        </div>
+
+        <div className="space-y-3">
+          <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-primary">Manutenção</p>
+          <h1 className="text-3xl font-black tracking-tight text-slate-50">Voltamos em instantes</h1>
+          <p className="text-sm leading-relaxed text-slate-400">
+            A sincronização na nuvem está temporariamente indisponível. Você pode tentar novamente agora
+            ou seguir usando os dados locais enquanto estabilizamos o serviço.
+          </p>
+        </div>
+
+        <div className="space-y-3">
+          <button
+            type="button"
+            onClick={onRetry}
+            disabled={isRetrying}
+            className="flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-primary font-bold text-background-dark shadow-lg shadow-primary/20 transition-all hover:scale-[1.01] active:scale-95 disabled:opacity-60"
+          >
+            <RefreshCw size={18} className={isRetrying ? 'animate-spin' : ''} />
+            {isRetrying ? 'Tentando novamente...' : 'Tentar novamente'}
+          </button>
+          <button
+            type="button"
+            onClick={onContinueOffline}
+            className="flex h-12 w-full items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-sm font-bold text-slate-200 transition-colors hover:bg-white/10"
+          >
+            Continuar com dados locais
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CloudSyncErrorScreen({
+  onRetry,
+  onContinueOffline,
+  isRetrying,
+  statusCode,
+}: {
+  onRetry: () => void;
+  onContinueOffline: () => void;
+  isRetrying?: boolean;
+  statusCode?: number | null;
+}) {
+  return (
+    <div className="relative mx-auto flex min-h-[100dvh] w-full max-w-md flex-col justify-center overflow-x-hidden px-5 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(1.5rem,env(safe-area-inset-top))] sm:px-8">
+      <div className="absolute left-1/2 top-1/4 -z-10 size-72 -translate-x-1/2 rounded-full bg-primary/10 blur-[120px]" />
+
+      <div className="space-y-8 rounded-[2rem] border border-primary/15 bg-black/40 p-6 text-center shadow-2xl shadow-black/30 backdrop-blur-xl sm:p-8">
+        <div className="mx-auto flex size-20 items-center justify-center rounded-3xl border border-primary/20 bg-primary/10">
+          <CloudOff size={36} className="text-primary" />
+        </div>
+
+        <div className="space-y-3">
+          <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-primary">Sync</p>
+          <h1 className="text-3xl font-black tracking-tight text-slate-50">Falha ao sincronizar</h1>
+          <p className="text-sm leading-relaxed text-slate-400">
+            Não conseguimos carregar os dados da nuvem neste momento. Você pode tentar novamente ou
+            continuar com a versão local disponível neste aparelho.
+          </p>
+          {typeof statusCode === 'number' && (
+            <p className="inline-flex items-center justify-center gap-2 rounded-full border border-amber-400/20 bg-amber-500/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-200">
+              <AlertTriangle size={14} />
+              HTTP {statusCode}
+            </p>
+          )}
+        </div>
+
+        <div className="space-y-3">
+          <button
+            type="button"
+            onClick={onRetry}
+            disabled={isRetrying}
+            className="flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-primary font-bold text-background-dark shadow-lg shadow-primary/20 transition-all hover:scale-[1.01] active:scale-95 disabled:opacity-60"
+          >
+            <RefreshCw size={18} className={isRetrying ? 'animate-spin' : ''} />
+            {isRetrying ? 'Tentando novamente...' : 'Tentar novamente'}
+          </button>
+          <button
+            type="button"
+            onClick={onContinueOffline}
+            className="flex h-12 w-full items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-sm font-bold text-slate-200 transition-colors hover:bg-white/10"
+          >
+            Continuar com dados locais
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2043,6 +2338,7 @@ export default function App() {
 function CompletionModal({
   peak,
   initialData,
+  isReadOnly = false,
   participantSuggestions,
   participantNameMap,
   isLoadingParticipantSuggestions,
@@ -2053,6 +2349,7 @@ function CompletionModal({
 }: { 
   peak: Peak, 
   initialData?: { date: string, participants: string[], wikilocUrl?: string },
+  isReadOnly?: boolean,
   participantSuggestions: string[],
   participantNameMap: Map<string, string>,
   isLoadingParticipantSuggestions: boolean,
@@ -2147,7 +2444,9 @@ function CompletionModal({
         className="relative mx-auto w-full max-w-sm rounded-3xl border border-primary/20 bg-neutral-forest p-4 sm:p-6 space-y-5 sm:space-y-6 max-h-[min(88dvh,42rem)] overflow-y-auto overflow-x-hidden overscroll-contain no-scrollbar"
       >
         <div className="flex justify-between items-center">
-          <h2 className="text-xl font-bold">{initialData ? 'Editar' : 'Concluir'} {peak.name}</h2>
+          <h2 className="text-xl font-bold">
+            {isReadOnly ? 'Detalhes de' : initialData ? 'Editar' : 'Concluir'} {peak.name}
+          </h2>
           <button onClick={onClose} className="text-slate-500 hover:text-white">
             <X size={24} />
           </button>
@@ -2163,6 +2462,7 @@ function CompletionModal({
               type="date" 
               value={date}
               onChange={(e) => setDate(e.target.value)}
+              disabled={isReadOnly}
               className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-base sm:text-sm focus:outline-none focus:border-primary transition-all text-white"
             />
           </div>
@@ -2189,11 +2489,13 @@ function CompletionModal({
                     addParticipant();
                   }
                 }}
+                disabled={isReadOnly}
                 className="flex-1 min-w-0 bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-base sm:text-sm focus:outline-none focus:border-primary transition-all"
               />
               <button 
                 onClick={addParticipant}
-                disabled={!participantNameMap.has(normalizeText(participantInput))}
+                type="button"
+                disabled={isReadOnly || !participantNameMap.has(normalizeText(participantInput))}
                 className="size-12 shrink-0 bg-primary/10 text-primary border border-primary/20 rounded-2xl flex items-center justify-center disabled:opacity-50"
               >
                 <Plus size={20} />
@@ -2215,6 +2517,7 @@ function CompletionModal({
                     key={name}
                     type="button"
                     onClick={() => addParticipantByName(name)}
+                    disabled={isReadOnly}
                     className="text-[10px] font-bold px-3 py-1.5 rounded-full border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
                   >
                     {name}
@@ -2226,7 +2529,9 @@ function CompletionModal({
               {participants.map(p => (
                 <span key={p} className="bg-primary/10 text-primary text-[10px] font-bold px-3 py-1.5 rounded-full border border-primary/20 flex items-center gap-1.5">
                   {p}
-                  <button onClick={() => removeParticipant(p)}><X size={10} /></button>
+                  {!isReadOnly && (
+                    <button type="button" onClick={() => removeParticipant(p)}><X size={10} /></button>
+                  )}
                 </span>
               ))}
             </div>
@@ -2242,8 +2547,19 @@ function CompletionModal({
               placeholder="https://pt.wikiloc.com/..."
               value={wikilocUrl}
               onChange={(e) => setWikilocUrl(e.target.value)}
+              disabled={isReadOnly}
               className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-base sm:text-sm focus:outline-none focus:border-primary transition-all"
             />
+            {isReadOnly && wikilocUrl && (
+              <a
+                href={wikilocUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[11px] font-bold text-primary hover:underline"
+              >
+                <MapIcon size={12} /> Abrir no Wikiloc
+              </a>
+            )}
           </div>
         </div>
 
@@ -2252,18 +2568,20 @@ function CompletionModal({
             onClick={onClose}
             className="flex-1 h-12 rounded-2xl border border-white/10 text-slate-400 font-bold text-base sm:text-sm"
           >
-            Cancelar
+            {isReadOnly ? 'Fechar' : 'Cancelar'}
           </button>
-          <button 
-            onClick={() => onSave({
-              date: formatISOToBRDate(date),
-              participants,
-              wikilocUrl,
-            })}
-            className="flex-1 h-12 rounded-2xl bg-primary text-background-dark font-bold text-base sm:text-sm"
-          >
-            {initialData ? 'Salvar' : 'Confirmar'}
-          </button>
+          {!isReadOnly && (
+            <button 
+              onClick={() => onSave({
+                date: formatISOToBRDate(date),
+                participants,
+                wikilocUrl,
+              })}
+              className="flex-1 h-12 rounded-2xl bg-primary text-background-dark font-bold text-base sm:text-sm"
+            >
+              {initialData ? 'Salvar' : 'Confirmar'}
+            </button>
+          )}
         </div>
       </motion.div>
     </motion.div>
@@ -2325,11 +2643,11 @@ function LoginScreen({
   };
 
   return (
-    <div className="min-h-screen bg-background-dark flex flex-col p-8 justify-center max-w-md mx-auto relative">
+    <div className="relative mx-auto flex min-h-[100dvh] w-full max-w-md flex-col justify-center overflow-x-hidden px-5 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(1.5rem,env(safe-area-inset-top))] sm:px-8">
       {/* Background Glow */}
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 size-64 bg-primary/10 blur-[100px] rounded-full -z-10" />
       
-      <div className="space-y-12">
+      <div className="space-y-8 sm:space-y-12">
         <header className="space-y-4 text-center">
           <div className="inline-flex items-center justify-center size-20 bg-primary/10 rounded-3xl border border-primary/20 mb-4">
             <Mountain size={40} className="text-primary" />
@@ -2342,7 +2660,7 @@ function LoginScreen({
           </p>
         </header>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
+        <form onSubmit={handleSubmit} className="space-y-5 sm:space-y-6">
           <div className="space-y-4">
             <div className="relative">
               <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={20} />
@@ -2480,10 +2798,10 @@ function PasswordUpdateScreen({
   };
 
   return (
-    <div className="min-h-screen bg-background-dark flex flex-col p-8 justify-center max-w-md mx-auto relative">
+    <div className="relative mx-auto flex min-h-[100dvh] w-full max-w-md flex-col justify-center overflow-x-hidden px-5 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(1.5rem,env(safe-area-inset-top))] sm:px-8">
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 size-64 bg-primary/10 blur-[100px] rounded-full -z-10" />
 
-      <div className="space-y-10">
+      <div className="space-y-8 sm:space-y-10">
         <header className="space-y-3 text-center">
           <div className="inline-flex items-center justify-center size-20 bg-primary/10 rounded-3xl border border-primary/20 mb-2">
             <Lock size={36} className="text-primary" />
@@ -3443,14 +3761,10 @@ function HomeScreen({
   onViewAllSerras: () => void,
   onOpenProfile: () => void,
 }) {
-  const currentUserKeys = buildUserIdentityKeys(user, participantNameMap);
-  const isPeakCompletedByUser = (peak: Peak) =>
-    peak.completions.some(completion =>
-      Array.isArray(completion.participants) &&
-      completion.participants.some(participant => currentUserKeys.includes(normalizeText(participant))),
-    );
+  const scopedMountainRanges = scopeMountainRangesForUser(mountainRanges, user, participantNameMap);
+  const isPeakCompletedByUser = (peak: Peak) => peak.completions.length > 0;
 
-  const rangePicoStats = mountainRanges.map(range => {
+  const rangePicoStats = scopedMountainRanges.map(range => {
     const peaks = Array.isArray(range.peaks) ? range.peaks : [];
     const picoPeaks = peaks.filter(peak => resolvePeakLocalType(peak) === 'pico');
     const totalPicos = picoPeaks.length;
@@ -3484,23 +3798,23 @@ function HomeScreen({
     })
     .slice(0, 3);
 
-  const allPeaks = mountainRanges.flatMap(range => (Array.isArray(range.peaks) ? range.peaks : []));
+  const allPeaks = scopedMountainRanges.flatMap(range => (Array.isArray(range.peaks) ? range.peaks : []));
   const statsByLocalType = LOCAL_TYPES.reduce((acc, localType) => {
     const localTypePeaks = allPeaks.filter(peak => resolvePeakLocalType(peak) === localType);
     acc[localType] = {
-      completed: localTypePeaks.filter(peak => peak.completions.length > 0).length,
+      completed: localTypePeaks.filter(isPeakCompletedByUser).length,
       total: localTypePeaks.length,
     };
     return acc;
   }, {} as Record<LocalType, { completed: number; total: number }>);
-  const exploredRanges = mountainRanges.filter(range => {
+  const exploredRanges = scopedMountainRanges.filter(range => {
     const peaks = Array.isArray(range.peaks) ? range.peaks : [];
-    return peaks.some(peak => peak.completions.length > 0);
+    return peaks.some(isPeakCompletedByUser);
   }).length;
-  const totalRanges = mountainRanges.length;
+  const totalRanges = scopedMountainRanges.length;
   const highestAltitudeConquered = allPeaks
     .filter(
-      peak => peak.completions.length > 0 && typeof peak.altitude_metros === 'number',
+      peak => isPeakCompletedByUser(peak) && typeof peak.altitude_metros === 'number',
     )
     .sort((a, b) => {
       const altitudeDifference = (b.altitude_metros as number) - (a.altitude_metros as number);
@@ -3585,7 +3899,9 @@ function HomeScreen({
 
         <div className="space-y-4">
           {topRangesByChecks.map(range => (
-            <ProgressItem key={range.id} label={range.name} current={range.completedPicos} total={range.totalPicos} />
+            <div key={range.id}>
+              <ProgressItem label={range.name} current={range.completedPicos} total={range.totalPicos} />
+            </div>
           ))}
         </div>
       </section>
@@ -3641,7 +3957,7 @@ function HomeScreen({
   );
 }
 
-function ProgressItem({ label, current, total, key }: { label: string, current: number, total: number, key?: React.Key }) {
+function ProgressItem({ label, current, total }: { label: string, current: number, total: number }) {
   const percentage = total > 0 ? (current / total) * 100 : 0;
   return (
     <div className="space-y-1.5">
@@ -3688,6 +4004,7 @@ function HikerStatisticCard({
 
 function SerrasScreen({ 
   user,
+  participantNameMap,
   mountainRanges, 
   onTogglePeak, 
   onDeleteCompletion,
@@ -3698,9 +4015,11 @@ function SerrasScreen({
   onDeleteRange,
   canManageCatalog,
   canDeleteCompletion,
+  canViewCompletion,
   onBack
 }: { 
   user: User,
+  participantNameMap: Map<string, string>,
   mountainRanges: MountainRange[], 
   onTogglePeak: (rangeId: string, peakId: string, completionId?: string) => void,
   onDeleteCompletion: (rangeId: string, peakId: string, completionId: string) => void,
@@ -3711,13 +4030,15 @@ function SerrasScreen({
   onDeleteRange: (rangeId: string) => void,
   canManageCatalog: boolean,
   canDeleteCompletion: (completion: PeakCompletion) => boolean,
+  canViewCompletion: (completion: PeakCompletion) => boolean,
   onBack: () => void
 }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'DONE' | 'TODO'>('ALL');
 
   const normalizedSearchTerm = normalizeText(searchTerm);
-  const filteredRanges = mountainRanges
+  const scopedMountainRanges = scopeMountainRangesForUser(mountainRanges, user, participantNameMap);
+  const filteredRanges = scopedMountainRanges
     .map(range => {
       const rangeMatchesSearch = normalizeText(range.name).includes(normalizedSearchTerm);
       const peaks = range.peaks.filter(peak => {
@@ -3794,6 +4115,7 @@ function SerrasScreen({
               onDeleteRange={() => onDeleteRange(range.id)}
               canManageCatalog={canManageCatalog}
               canDeleteCompletion={canDeleteCompletion}
+              canViewCompletion={canViewCompletion}
             />
           ))
         ) : (
@@ -3833,6 +4155,7 @@ function MountainRangeAccordion({
   onDeleteRange,
   canManageCatalog,
   canDeleteCompletion,
+  canViewCompletion,
 }: MountainRangeAccordionProps & { 
   onTogglePeak: (rangeId: string, peakId: string, completionId?: string) => void,
   onDeleteCompletion: (rangeId: string, peakId: string, completionId: string) => void,
@@ -3842,6 +4165,7 @@ function MountainRangeAccordion({
   onDeleteRange: () => void,
   canManageCatalog: boolean,
   canDeleteCompletion: (completion: PeakCompletion) => boolean,
+  canViewCompletion: (completion: PeakCompletion) => boolean,
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const percentage = range.totalPeaks > 0 ? (range.completedPeaks / range.totalPeaks) * 100 : 0;
@@ -3988,10 +4312,10 @@ function MountainRangeAccordion({
                                   <div
                                     key={comp.id}
                                     className={`relative rounded-lg bg-black/20 p-2 pr-8 group transition-colors ${
-                                      canManageCatalog || canDeleteCompletion(comp) ? 'cursor-pointer hover:bg-black/30' : 'cursor-default'
+                                      canViewCompletion(comp) ? 'cursor-pointer hover:bg-black/30' : 'cursor-default'
                                     }`}
                                     onClick={() => {
-                                      if (canManageCatalog || canDeleteCompletion(comp)) {
+                                      if (canViewCompletion(comp)) {
                                         onTogglePeak(range.id, peak.id, comp.id);
                                       }
                                     }}

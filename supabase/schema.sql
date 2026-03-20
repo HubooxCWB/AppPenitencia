@@ -258,6 +258,7 @@ declare
   v_email text;
   v_username text;
   v_display_name text;
+  v_avatar_url text;
   v_role public.app_role;
   v_row public.app_users;
 begin
@@ -265,6 +266,7 @@ begin
   v_email := lower(trim(coalesce(p_email, '')));
   v_username := lower(trim(coalesce(p_username, '')));
   v_display_name := nullif(trim(coalesce(p_display_name, '')), '');
+  v_avatar_url := nullif(trim(coalesce(p_avatar_url, '')), '');
 
   if v_auth_user_id is null then
     raise exception 'auth_user_id is required';
@@ -300,12 +302,43 @@ begin
     email = v_email,
     display_name = v_display_name,
     role = v_role,
-    avatar_url = coalesce(nullif(trim(coalesce(p_avatar_url, '')), ''), avatar_url),
+    avatar_url = coalesce(v_avatar_url, avatar_url),
     is_active = true,
     last_login_at = now(),
     updated_at = now()
   where auth_user_id = v_auth_user_id
   returning * into v_row;
+
+  if not found then
+    update public.app_users
+    set
+      auth_user_id = v_auth_user_id,
+      email = v_email,
+      username = v_username,
+      display_name = v_display_name,
+      role = v_role,
+      avatar_url = coalesce(v_avatar_url, avatar_url),
+      is_active = true,
+      last_login_at = now(),
+      updated_at = now()
+    where lower(coalesce(email, '')) = v_email
+    returning * into v_row;
+  end if;
+
+  if not found then
+    update public.app_users
+    set
+      auth_user_id = v_auth_user_id,
+      email = v_email,
+      display_name = v_display_name,
+      role = v_role,
+      avatar_url = coalesce(v_avatar_url, avatar_url),
+      is_active = true,
+      last_login_at = now(),
+      updated_at = now()
+    where username = v_username
+    returning * into v_row;
+  end if;
 
   if not found then
     insert into public.app_users (
@@ -324,23 +357,10 @@ begin
       v_username,
       v_display_name,
       v_role,
-      nullif(trim(coalesce(p_avatar_url, '')), ''),
+      v_avatar_url,
       true,
       now()
     )
-    on conflict (username)
-    do update set
-      auth_user_id = excluded.auth_user_id,
-      email = excluded.email,
-      display_name = excluded.display_name,
-      role = case
-        when excluded.email = 'huboox.rec@gmail.com' then 'ADMIN'::public.app_role
-        else 'USER'::public.app_role
-      end,
-      avatar_url = coalesce(excluded.avatar_url, public.app_users.avatar_url),
-      is_active = true,
-      last_login_at = now(),
-      updated_at = now()
     returning * into v_row;
   end if;
 
@@ -354,6 +374,30 @@ begin
     'is_active', v_row.is_active,
     'last_login_at', v_row.last_login_at
   );
+end;
+$$;
+
+create or replace function public.reset_app_data(p_include_users boolean default true)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null or not public.is_current_user_admin() then
+    raise exception 'forbidden';
+  end if;
+
+  truncate table
+    public.completion_participants,
+    public.completions,
+    public.peaks,
+    public.mountain_ranges
+  restart identity;
+
+  if p_include_users then
+    delete from public.app_users;
+  end if;
 end;
 $$;
 
@@ -862,6 +906,7 @@ grant execute on function public.upsert_completion(text, text, text, jsonb, text
 grant execute on function public.delete_completion(text) to authenticated;
 grant execute on function public.list_app_users() to authenticated;
 grant execute on function public.list_participant_directory() to authenticated;
+grant execute on function public.reset_app_data(boolean) to authenticated;
 
 revoke all on public.app_users from anon, authenticated;
 revoke all on public.mountain_ranges from anon, authenticated;

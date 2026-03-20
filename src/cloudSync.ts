@@ -137,9 +137,8 @@ const buildAuthProfile = (user: SupabaseAuthUser | null | undefined): CloudAuthP
     getMetadataString(user, 'display_name') ??
     getMetadataString(user, 'name') ??
     username;
-  const avatarUrl =
-    getMetadataString(user, 'avatar_url') ??
-    `https://picsum.photos/seed/${encodeURIComponent(username || 'hiker')}/200/200`;
+  // Keep auth metadata lean; avatars live in public.app_users to avoid oversized JWTs.
+  const avatarUrl = `https://picsum.photos/seed/${encodeURIComponent(username || 'hiker')}/200/200`;
 
   return {
     id: user?.id ?? username,
@@ -168,6 +167,55 @@ const parseAuthResponseError = async (
   response: Response,
   fallbackMessage: string,
 ): Promise<string> => {
+  const translateAuthErrorMessage = (message: string) => {
+    const normalizedMessage = message
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
+
+    if (
+      normalizedMessage.includes('invalid login credentials') ||
+      normalizedMessage.includes('email not confirmed') ||
+      normalizedMessage.includes('invalid email or password')
+    ) {
+      return 'E-mail ou senha inválidos.';
+    }
+
+    if (normalizedMessage.includes('user already registered')) {
+      return 'Já existe uma conta cadastrada com este e-mail.';
+    }
+
+    if (
+      normalizedMessage.includes('password should be at least') ||
+      normalizedMessage.includes('password is too short')
+    ) {
+      return 'A senha deve ter pelo menos 6 caracteres.';
+    }
+
+    if (normalizedMessage.includes('signup is disabled')) {
+      return 'O cadastro está desativado no momento.';
+    }
+
+    if (
+      normalizedMessage.includes('email rate limit exceeded') ||
+      normalizedMessage.includes('rate limit') ||
+      normalizedMessage.includes('too many requests')
+    ) {
+      return 'Muitas tentativas em sequência. Aguarde um pouco e tente novamente.';
+    }
+
+    if (normalizedMessage.includes('same password')) {
+      return 'A nova senha precisa ser diferente da senha atual.';
+    }
+
+    if (normalizedMessage.includes('weak password')) {
+      return 'Escolha uma senha mais forte para continuar.';
+    }
+
+    return message;
+  };
+
   try {
     const payload = (await response.json()) as unknown;
     const record = asRecord(payload);
@@ -177,7 +225,7 @@ const parseAuthResponseError = async (
 
     const messageCandidate = record.error_description ?? record.message ?? record.error ?? record.msg;
     if (typeof messageCandidate === 'string' && messageCandidate.trim()) {
-      return messageCandidate.trim();
+      return translateAuthErrorMessage(messageCandidate.trim());
     }
 
     return fallbackMessage;
@@ -261,16 +309,40 @@ const buildAuthBearerHeaders = (accessToken: string) => ({
 });
 
 const fetchWithTimeout = async (url: string, options: RequestInit) => {
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const runAttempt = async (useTimeout: boolean) => {
+    const controller = useTimeout ? new AbortController() : null;
+    const timeoutId = useTimeout
+      ? window.setTimeout(() => controller?.abort(), REQUEST_TIMEOUT_MS)
+      : null;
+
+    try {
+      return await fetch(url, {
+        ...options,
+        cache: 'no-store',
+        signal: controller?.signal,
+      });
+    } finally {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    }
+  };
 
   try {
-    return await fetch(url, {
-      ...options,
-      signal: controller.signal,
-    });
-  } finally {
-    window.clearTimeout(timeoutId);
+    return await runAttempt(true);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    const isAbortError = error instanceof DOMException && error.name === 'AbortError';
+    const isRetryableNetworkError =
+      error instanceof TypeError ||
+      /ERR_HTTP2_PROTOCOL_ERROR|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|Failed to fetch/i.test(message);
+
+    if (isAbortError || !isRetryableNetworkError) {
+      throw error;
+    }
+
+    console.warn('[cloudSync] retrying request after transient network/protocol failure', url, message);
+    return runAttempt(false);
   }
 };
 
@@ -703,7 +775,8 @@ export const updateSupabaseAuthProfile = async (params: {
         data: {
           ...(typeof params.username === 'string' ? { username: params.username } : {}),
           ...(typeof params.displayName === 'string' ? { display_name: params.displayName } : {}),
-          ...(typeof params.avatarUrl === 'string' ? { avatar_url: params.avatarUrl } : {}),
+          // Explicitly clear avatar_url from auth metadata; the app stores avatars in public.app_users.
+          avatar_url: null,
         },
       }),
     });
@@ -762,11 +835,14 @@ export const upsertCloudUser = async (payload: {
     });
 
     if (!response.ok) {
+      const errorBody = await response.text().catch(() => '');
+      console.error('[cloudSync] upsertCloudUser failed', response.status, errorBody);
       return null;
     }
 
     return normalizeCloudAppUser(await response.json());
-  } catch {
+  } catch (error) {
+    console.error('[cloudSync] upsertCloudUser failed: network/timeout', error);
     return null;
   }
 };

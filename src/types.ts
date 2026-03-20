@@ -17,7 +17,16 @@
   Users
 } from 'lucide-react';
 
-export type Screen = 'LOGIN' | 'HOME' | 'SERRAS' | 'DIARIO' | 'METAS' | 'RANKING' | 'PERFIL';
+export type Screen =
+  | 'LOGIN'
+  | 'HOME'
+  | 'SERRAS'
+  | 'DIARIO'
+  | 'METAS'
+  | 'RANKING'
+  | 'PERFIL'
+  | 'MAINTENANCE'
+  | 'CLOUD_SYNC_ERROR';
 
 export interface User {
   id: string;
