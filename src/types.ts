@@ -46,7 +46,7 @@ export interface PeakCompletion {
 }
 
 export type PeakCategory = 'PEAK' | 'WATERFALL';
-export type LocalType = 'pico' | 'morro' | 'cachoeira' | 'trilha';
+export type LocalType = 'pico' | 'morro' | 'cachoeira' | 'trilha' | 'ilha';
 export type SupportedState = 'Paraná';
 
 export interface Peak {
@@ -239,6 +239,16 @@ export const MOCK_MOUNTAIN_RANGES: MountainRange[] = [
       createPeak('tres-morrinhos', 'Três Morrinhos', 'morro', 1080),
       createPeak('morro-do-cal', 'Morro do Cal', 'morro', 1020),
       createPeak('pedra-branca-do-araraquara', 'Pedra Branca do Araraquara', 'morro', 1200),
+    ]
+  },
+  {
+    id: 'ilhas',
+    name: 'Ilhas',
+    totalPeaks: 0,
+    completedPeaks: 0,
+    peaks: [
+      createPeak('ilha-do-mel', 'Ilha do Mel', 'ilha', null),
+      createPeak('ilha-das-pecas', 'Ilha das Peças', 'ilha', null),
     ]
   }
 ];

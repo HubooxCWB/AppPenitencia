@@ -23,7 +23,20 @@ end $$;
 do $$
 begin
   if not exists (select 1 from pg_type where typname = 'local_type') then
-    create type public.local_type as enum ('pico', 'morro', 'trilha', 'cachoeira');
+    create type public.local_type as enum ('pico', 'morro', 'trilha', 'ilha', 'cachoeira');
+  end if;
+end $$;
+
+do $$
+begin
+  if exists (select 1 from pg_type where typname = 'local_type')
+    and not exists (
+      select 1
+      from pg_enum
+      where enumtypid = 'public.local_type'::regtype
+        and enumlabel = 'ilha'
+    ) then
+    alter type public.local_type add value 'ilha' after 'trilha';
   end if;
 end $$;
 
@@ -174,7 +187,7 @@ begin
   if normalized = 'cume' then
     return 'pico';
   end if;
-  if normalized in ('pico', 'morro', 'trilha', 'cachoeira') then
+  if normalized in ('pico', 'morro', 'trilha', 'ilha', 'cachoeira') then
     return normalized::public.local_type;
   end if;
   return 'pico';
@@ -450,6 +463,7 @@ create or replace function public.list_participant_directory()
 returns table (
   username text,
   display_name text,
+  role text,
   avatar_url text,
   created_at timestamptz
 )
@@ -467,6 +481,7 @@ begin
   select
     u.username,
     u.display_name,
+    u.role::text as role,
     u.avatar_url,
     u.created_at
   from public.app_users u

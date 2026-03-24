@@ -52,12 +52,14 @@ import {
   LocalType
 } from './types';
 import {
+  buildGeneratedAvatarUrl,
   CloudAppUser,
   CloudAuthProfile,
   CloudParticipantUser,
   deleteCloudCompletion,
   getMyCloudUser,
   isCloudSyncEnabled,
+  isGeneratedAvatarUrl,
   listCloudUsers,
   listParticipantDirectory,
   loadRangesFromCloud,
@@ -101,6 +103,7 @@ const buildParticipantNameMap = (
   currentUser?: User | null,
 ) => {
   const participantNameMap = new Map<string, string>();
+  const eligibleRegisteredUsers = registeredUsers.filter(registeredUser => registeredUser.role !== 'ADMIN');
   const registerName = (alias: unknown, displayName: unknown) => {
     const normalizedAlias = normalizeText(alias);
     const trimmedDisplayName = String(displayName ?? '').trim();
@@ -111,12 +114,12 @@ const buildParticipantNameMap = (
     participantNameMap.set(normalizedAlias, trimmedDisplayName);
   };
 
-  registeredUsers.forEach(registeredUser => {
+  eligibleRegisteredUsers.forEach(registeredUser => {
     registerName(registeredUser.display_name, registeredUser.display_name);
     registerName(registeredUser.username, registeredUser.display_name);
   });
 
-  if (currentUser) {
+  if (currentUser && currentUser.role !== 'ADMIN') {
     registerName(currentUser.name, currentUser.name);
     registerName(currentUser.username, currentUser.name);
 
@@ -144,12 +147,12 @@ const buildParticipantAvatarMap = (
     participantAvatarMap.set(normalizedAlias, trimmedAvatar);
   };
 
-  registeredUsers.forEach(registeredUser => {
+  registeredUsers.filter(registeredUser => registeredUser.role !== 'ADMIN').forEach(registeredUser => {
     registerAvatar(registeredUser.display_name, registeredUser.avatar_url);
     registerAvatar(registeredUser.username, registeredUser.avatar_url);
   });
 
-  if (currentUser) {
+  if (currentUser && currentUser.role !== 'ADMIN') {
     registerAvatar(currentUser.name, currentUser.avatar);
     registerAvatar(currentUser.username, currentUser.avatar);
 
@@ -160,6 +163,54 @@ const buildParticipantAvatarMap = (
   }
 
   return participantAvatarMap;
+};
+
+const buildAdminIdentityKeys = (
+  registeredUsers: CloudParticipantUser[],
+  currentUser?: User | null,
+) => {
+  const adminKeys = new Set<string>();
+  const registerIdentity = (value: unknown) => {
+    const normalizedValue = normalizeText(value);
+    if (normalizedValue) {
+      adminKeys.add(normalizedValue);
+    }
+  };
+
+  registeredUsers
+    .filter(registeredUser => registeredUser.role === 'ADMIN')
+    .forEach(registeredUser => {
+      registerIdentity(registeredUser.display_name);
+      registerIdentity(registeredUser.username);
+    });
+
+  if (currentUser?.role === 'ADMIN') {
+    registerIdentity(currentUser.name);
+    registerIdentity(currentUser.username);
+    const email = String(currentUser.email ?? '').trim().toLowerCase();
+    if (email.includes('@')) {
+      registerIdentity(email);
+      registerIdentity(email.split('@')[0]);
+    }
+  }
+
+  return adminKeys;
+};
+
+const mergeParticipantDirectoryUser = (
+  currentRows: CloudParticipantUser[],
+  nextRow: CloudParticipantUser,
+) => {
+  const nextUsernameKey = normalizeText(nextRow.username);
+  const nextDisplayNameKey = normalizeText(nextRow.display_name);
+  const filteredRows = currentRows.filter(row => (
+    normalizeText(row.username) !== nextUsernameKey &&
+    normalizeText(row.display_name) !== nextDisplayNameKey
+  ));
+
+  return [...filteredRows, nextRow].sort((a, b) =>
+    String(a.display_name ?? a.username).localeCompare(String(b.display_name ?? b.username), 'pt-BR'),
+  );
 };
 
 const resolveParticipantDisplayName = (
@@ -245,14 +296,10 @@ const scopeMountainRangesForUser = (
       ...peak,
       completions: getVisibleCompletionsForUser(peak, currentUser, participantNameMap),
     }));
-    const totalTargetPeaks = peaks.filter(peak => {
-      const localType = resolvePeakLocalType(peak);
-      return localType === 'pico' || localType === 'morro';
-    }).length;
-    const completedTargetPeaks = peaks.filter(peak => {
-      const localType = resolvePeakLocalType(peak);
-      return (localType === 'pico' || localType === 'morro') && peak.completions.length > 0;
-    }).length;
+    const totalTargetPeaks = peaks.filter(peak => resolvePeakCategory(peak) === 'PEAK').length;
+    const completedTargetPeaks = peaks.filter(
+      peak => resolvePeakCategory(peak) === 'PEAK' && peak.completions.length > 0,
+    ).length;
 
     return {
       ...range,
@@ -395,17 +442,20 @@ const LOCAL_TYPE_LABELS: Record<LocalType, string> = {
   morro: 'Morro',
   cachoeira: 'Cachoeira',
   trilha: 'Trilha',
+  ilha: 'Ilha',
 };
 const LOCAL_TYPE_ORDER: Record<LocalType, number> = {
   pico: 1,
   morro: 2,
   trilha: 3,
-  cachoeira: 4,
+  ilha: 4,
+  cachoeira: 5,
 };
 const LOCAL_TYPE_SECTION_LABELS: Record<LocalType, string> = {
   pico: 'Picos',
   morro: 'Morros',
   trilha: 'Trilhas',
+  ilha: 'Ilhas',
   cachoeira: 'Cachoeiras',
 };
 const LOCAL_TYPE_STYLES: Record<LocalType, {
@@ -459,6 +509,19 @@ const LOCAL_TYPE_STYLES: Record<LocalType, {
     completionDateClass: 'text-cyan-300',
     completionLinkClass: 'text-cyan-300',
     participantTagClass: 'bg-cyan-500/5 text-cyan-200 border-cyan-500/20',
+  },
+  ilha: {
+    sectionTitleClass: 'text-teal-300',
+    cardCompletedClass: 'bg-teal-500/10 border-teal-400/30',
+    cardPendingClass: 'bg-teal-500/5 border-teal-400/20',
+    typeInfoClass: 'text-teal-200/80',
+    doneTextClass: 'text-teal-300',
+    actionEditButtonClass: 'bg-teal-500/10 text-teal-300 hover:bg-teal-500/20',
+    actionAddButtonClass: 'bg-teal-500/20 text-teal-300 hover:bg-teal-500/30',
+    completionBorderClass: 'border-teal-400/10',
+    completionDateClass: 'text-teal-300',
+    completionLinkClass: 'text-teal-300',
+    participantTagClass: 'bg-teal-500/5 text-teal-200 border-teal-500/20',
   },
   cachoeira: {
     sectionTitleClass: 'text-sky-300',
@@ -538,8 +601,14 @@ const BASE_PEAK_RULES = new Map(
     BASE_PEAK_RULES.set(normalizeText(alias), rule.data);
   });
 });
-const LOCAL_TYPES: LocalType[] = ['pico', 'morro', 'cachoeira', 'trilha'];
+const LOCAL_TYPES: LocalType[] = ['pico', 'morro', 'cachoeira', 'trilha', 'ilha'];
 const LEGACY_CUME_TYPE = 'cume';
+const ISLAND_RANGE_ID = 'ilhas';
+const usesAltitudeByLocalType = (localType: LocalType) =>
+  localType === 'pico' || localType === 'morro' || localType === 'cachoeira';
+const getSuggestedLocalTypeForRange = (rangeId: string): LocalType => (
+  rangeId === ISLAND_RANGE_ID ? 'ilha' : 'pico'
+);
 const isLocalType = (value: unknown): value is LocalType =>
   typeof value === 'string' && LOCAL_TYPES.includes(value as LocalType);
 const resolvePeakLocalType = (
@@ -581,15 +650,21 @@ const formatAltitude = (altitude: number | null | undefined) => (
 const formatPeakMeta = (
   peak: Pick<Peak, 'tipo_local' | 'category' | 'altitude_metros' | 'altura_queda_metros'> | null | undefined,
 ) => {
-  const altitudeLabel = formatAltitude(peak?.altitude_metros);
   const localType = resolvePeakLocalType(peak);
   const dropHeight = resolvePeakDropHeight(peak);
+  const altitude = resolvePeakAltitude(peak);
 
-  if (localType === 'cachoeira' && typeof dropHeight === 'number') {
-    return `${getPeakLocalTypeLabel(peak)} • ${altitudeLabel} • queda ${dropHeight} m`;
+  if (localType === 'trilha' || localType === 'ilha') {
+    return getPeakLocalTypeLabel(peak);
   }
 
-  return `${getPeakLocalTypeLabel(peak)} • ${altitudeLabel}`;
+  if (localType === 'cachoeira' && typeof dropHeight === 'number') {
+    return typeof altitude === 'number'
+      ? `${getPeakLocalTypeLabel(peak)} • ${formatAltitude(altitude)} • queda ${dropHeight} m`
+      : `${getPeakLocalTypeLabel(peak)} • queda ${dropHeight} m`;
+  }
+
+  return `${getPeakLocalTypeLabel(peak)} • ${formatAltitude(altitude)}`;
 };
 const GLOSSARY_ITEMS: Array<{ term: string; description: string }> = [
   {
@@ -603,6 +678,10 @@ const GLOSSARY_ITEMS: Array<{ term: string; description: string }> = [
   {
     term: 'Trilha',
     description: 'Caminho utilizado para trekking ou acesso a montanhas.',
+  },
+  {
+    term: 'Ilha',
+    description: 'Destino insular de exploração, normalmente sem altitude cadastrada.',
   },
   {
     term: 'Cachoeira',
@@ -794,7 +873,8 @@ const normalizePeakCompletions = (peak: Peak): PeakCompletion[] => {
 const cloneRanges = (ranges: MountainRange[]): MountainRange[] =>
   ranges.map<MountainRange>(range => ({
     ...range,
-    name: repairPossiblyMojibake(range.name),
+    id: normalizeText(range.id) === 'ilha' ? ISLAND_RANGE_ID : range.id,
+    name: normalizeText(range.name) === 'ilha' ? 'Ilhas' : repairPossiblyMojibake(range.name),
     peaks: Array.isArray(range.peaks)
       ? range.peaks.map<Peak>(peak => {
           const repairedPeakName = repairPossiblyMojibake(peak.name);
@@ -1049,6 +1129,15 @@ const readStoredParticipantDirectory = (): CloudParticipantUser[] => {
   }
 };
 
+const resolveCloudAvatarForPersistence = (avatarUrl: string | undefined, username: string) => {
+  const trimmedAvatar = String(avatarUrl ?? '').trim();
+  if (!trimmedAvatar || isGeneratedAvatarUrl(trimmedAvatar, username)) {
+    return undefined;
+  }
+
+  return trimmedAvatar;
+};
+
 const persistParticipantDirectory = (rows: CloudParticipantUser[]) => {
   if (typeof window === 'undefined') {
     return;
@@ -1090,6 +1179,7 @@ export default function App() {
   const [cloudSyncErrorStatus, setCloudSyncErrorStatus] = useState<number | null>(null);
   const [registeredUsers, setRegisteredUsers] = useState<CloudParticipantUser[]>(() => readStoredParticipantDirectory());
   const [isLoadingRegisteredUsers, setIsLoadingRegisteredUsers] = useState(false);
+  const hadCachedUserOnLoad = useRef(Boolean(user));
   const hasInitializedMountainRangesPersistence = useRef(false);
   const hasAttemptedCloudHydration = useRef(false);
   const hasHydratedCloudRanges = useRef(!cloudSyncEnabled);
@@ -1105,6 +1195,7 @@ export default function App() {
   } | null>(null);
   const participantNameMap = buildParticipantNameMap(registeredUsers, user);
   const participantAvatarMap = buildParticipantAvatarMap(registeredUsers, user);
+  const adminIdentityKeys = buildAdminIdentityKeys(registeredUsers, user);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -1136,6 +1227,11 @@ export default function App() {
         }
 
         if (!authProfile) {
+          if (hadCachedUserOnLoad.current && user) {
+            setCurrentScreen('HOME');
+            return;
+          }
+
           setUser(null);
           setCurrentScreen('LOGIN');
           return;
@@ -1148,7 +1244,7 @@ export default function App() {
               email: baseUser.email,
               username: baseUser.username,
               displayName: baseUser.name,
-              avatarUrl: baseUser.avatar,
+              avatarUrl: resolveCloudAvatarForPersistence(baseUser.avatar, baseUser.username),
             })
           : await getMyCloudUser();
         const mappedUser = mergeUserWithCloudDirectory(baseUser, syncedUser);
@@ -1400,7 +1496,7 @@ export default function App() {
         email: userData.email,
         username: userData.username,
         displayName: userData.name,
-        avatarUrl: userData.avatar,
+        avatarUrl: resolveCloudAvatarForPersistence(userData.avatar, userData.username),
       });
 
       if (syncedUser) {
@@ -1441,7 +1537,7 @@ export default function App() {
 
   const handleProfileUpdate = async (updates: { username: string; avatar: string }) => {
     if (!user) {
-      return;
+      return { ok: false, message: 'Usuário não encontrado.' };
     }
 
     const sanitizedNextUsername = sanitizeUsername(updates.username);
@@ -1452,6 +1548,7 @@ export default function App() {
       avatar: trimmedAvatar || user.avatar,
     };
 
+    let resolvedUser = nextUser;
     setUser(nextUser);
 
     if (cloudSyncEnabled) {
@@ -1461,36 +1558,53 @@ export default function App() {
         avatarUrl: nextUser.avatar,
       });
 
-      if (authProfileResult.ok) {
-        setUser({
-          ...nextUser,
-          name: authProfileResult.profile.displayName,
-          username: authProfileResult.profile.username,
-          avatar: nextUser.avatar,
-          role: authProfileResult.profile.role,
-        });
+      if ('message' in authProfileResult) {
+        return { ok: false, message: authProfileResult.message };
       }
+
+      resolvedUser = {
+        ...nextUser,
+        name: authProfileResult.profile.displayName,
+        username: authProfileResult.profile.username,
+        avatar: nextUser.avatar,
+        role: authProfileResult.profile.role,
+      };
+      setUser(resolvedUser);
     }
 
-    if (cloudSyncEnabled && nextUser.email) {
-      void (async () => {
-        const syncedUser = await upsertCloudUser({
-          authUserId: nextUser.id,
-          email: nextUser.email,
-          username: nextUser.username,
-          displayName: nextUser.name,
-          avatarUrl: nextUser.avatar,
+    if (cloudSyncEnabled && resolvedUser.email) {
+      const syncedUser = await upsertCloudUser({
+        authUserId: resolvedUser.id,
+        email: resolvedUser.email,
+        username: resolvedUser.username,
+        displayName: resolvedUser.name,
+        avatarUrl: resolveCloudAvatarForPersistence(resolvedUser.avatar, resolvedUser.username),
+      });
+
+      if (!syncedUser) {
+        return { ok: false, message: 'Não foi possível sincronizar a foto de perfil na nuvem.' };
+      }
+
+      resolvedUser = mergeUserWithCloudDirectory(resolvedUser, syncedUser);
+      setUser(currentUser => (
+        currentUser && currentUser.id === resolvedUser.id
+          ? resolvedUser
+          : currentUser
+      ));
+      setRegisteredUsers(currentRows => {
+        const nextRows = mergeParticipantDirectoryUser(currentRows, {
+          username: syncedUser.username,
+          display_name: syncedUser.display_name,
+          role: syncedUser.role,
+          avatar_url: syncedUser.avatar_url,
+          created_at: syncedUser.created_at,
         });
-
-        if (syncedUser) {
-          setUser(currentUser => (
-            currentUser && currentUser.id === nextUser.id
-              ? mergeUserWithCloudDirectory(currentUser, syncedUser)
-              : currentUser
-          ));
-        }
-      })();
+        persistParticipantDirectory(nextRows);
+        return nextRows;
+      });
     }
+
+    return { ok: true };
   };
 
   const togglePeak = (rangeId: string, peakId: string, completionId?: string) => {
@@ -1593,15 +1707,18 @@ export default function App() {
       return;
     }
 
-    const baseParticipants = sanitizeParticipants(data.participants, participantNameMap);
+    const baseParticipants = sanitizeParticipants(data.participants, participantNameMap)
+      .filter(participant => !adminIdentityKeys.has(normalizeText(participant)));
     const currentUserDisplayName = resolveParticipantDisplayName(user.name, participantNameMap) || user.name;
     const normalizedCurrentUserName = normalizeText(currentUserDisplayName);
     const hasCurrentUser = baseParticipants.some(
       participant => normalizeText(participant) === normalizedCurrentUserName,
     );
-    const participantsToPersist = hasCurrentUser
+    const participantsToPersist = user.role === 'ADMIN'
       ? baseParticipants
-      : [...baseParticipants, currentUserDisplayName];
+      : hasCurrentUser
+        ? baseParticipants
+        : [...baseParticipants, currentUserDisplayName];
 
     if (cloudSyncEnabled) {
       void (async () => {
@@ -1986,7 +2103,9 @@ export default function App() {
   const participantSuggestions: string[] = Array.from(
     new Set<string>(
       [
-        ...registeredUsers.map(registeredUser => registeredUser.display_name),
+        ...registeredUsers
+          .filter(registeredUser => registeredUser.role !== 'ADMIN')
+          .map(registeredUser => registeredUser.display_name),
         ...mountainRanges.flatMap(range =>
           range.peaks.flatMap(peak =>
             peak.completions.flatMap(completion =>
@@ -1998,7 +2117,9 @@ export default function App() {
         ),
       ],
     ),
-  ).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  )
+    .filter(name => participantNameMap.has(normalizeText(name)))
+    .sort((a, b) => a.localeCompare(b, 'pt-BR'));
 
   if (isAuthBootstrapping) {
     return (
@@ -2083,6 +2204,7 @@ export default function App() {
             mountainRanges={mountainRanges}
             participantNameMap={participantNameMap}
             participantAvatarMap={participantAvatarMap}
+            adminIdentityKeys={adminIdentityKeys}
             onOpenProfile={() => setCurrentScreen('PERFIL')}
             onBack={() => setCurrentScreen('HOME')}
           />
@@ -2134,8 +2256,8 @@ export default function App() {
       <AnimatePresence>
         {isAddingRange && (
           <CreateModal 
-            title="Nova Serra" 
-            placeholder="Nome da Serra (ex: Serra da Mantiqueira)"
+            title="Nova Região" 
+            placeholder="Nome da região/grupo (ex: Ilha do Mel)"
             onClose={() => setIsAddingRange(false)} 
             onSave={addMountainRange} 
           />
@@ -2206,7 +2328,7 @@ export default function App() {
               active={currentScreen === 'SERRAS'} 
               onClick={() => setCurrentScreen('SERRAS')} 
               icon={<Mountain size={24} />} 
-              label="SERRAS" 
+              label="REGIÕES" 
             />
             <NavButton 
               active={currentScreen === 'RANKING'} 
@@ -2374,7 +2496,9 @@ function CompletionModal({
   const [participants, setParticipants] = useState<string[]>(
     initialData?.participants && initialData.participants.length > 0
       ? sanitizeParticipants(initialData.participants, participantNameMap)
-      : [resolveParticipantDisplayName(currentUser.name, participantNameMap) || currentUser.name],
+      : isAdmin
+        ? []
+        : [resolveParticipantDisplayName(currentUser.name, participantNameMap) || currentUser.name],
   );
   const [wikilocUrl, setWikilocUrl] = useState(initialData?.wikilocUrl || '');
 
@@ -2909,7 +3033,7 @@ function PerfilScreen({
   mountainRanges: MountainRange[],
   isCloudEnabled: boolean,
   participantNameMap: Map<string, string>,
-  onUpdateProfile: (updates: { username: string; avatar: string }) => void,
+  onUpdateProfile: (updates: { username: string; avatar: string }) => Promise<{ ok: boolean; message?: string }>,
   onExportBackup: () => void,
   onImportBackup: (backupText: string) => { success: boolean; message: string },
   onLogout: () => void
@@ -3028,7 +3152,7 @@ function PerfilScreen({
     event.target.value = '';
   };
 
-  const handleSaveProfile = () => {
+  const handleSaveProfile = async () => {
     const sanitized = sanitizeUsername(draftUsername);
     if (!sanitized) {
       setProfileError('Informe um @ válido usando letras, números, ponto, hífen ou underscore.');
@@ -3042,10 +3166,16 @@ function PerfilScreen({
       return;
     }
 
-    onUpdateProfile({
+    const result = await onUpdateProfile({
       username: sanitized,
       avatar: draftAvatar.trim(),
     });
+    if (!result.ok) {
+      setProfileError(result.message ?? 'Não foi possível atualizar o perfil.');
+      setProfileSuccessMessage('');
+      return;
+    }
+
     setDraftUsername(sanitized);
     setProfileError('');
     setProfileSuccessMessage('Perfil atualizado.');
@@ -3378,10 +3508,11 @@ function PerfilScreen({
         </div>
         <div className="p-4 rounded-2xl border border-white/10 bg-white/5 space-y-2">
           <p className="text-sm text-slate-200">• {userStatsByType.pico} picos conquistados</p>
-          <p className="text-sm text-slate-200">• {userExploredRangesCount} serras exploradas</p>
-          <p className="text-sm text-slate-200">• {userConqueredRangesCount} serras conquistadas</p>
+          <p className="text-sm text-slate-200">• {userExploredRangesCount} regiões exploradas</p>
+          <p className="text-sm text-slate-200">• {userConqueredRangesCount} regiões conquistadas</p>
           <p className="text-sm text-slate-200">• {userStatsByType.morro} morros conquistados</p>
           <p className="text-sm text-slate-200">• {userStatsByType.trilha} trilhas concluídas</p>
+          <p className="text-sm text-slate-200">• {userStatsByType.ilha} ilhas exploradas</p>
           <p className="text-sm text-slate-200">• {userStatsByType.cachoeira} cachoeiras visitadas</p>
         </div>
       </div>
@@ -3391,7 +3522,7 @@ function PerfilScreen({
           <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Ações Administrativas</h3>
           <div className="grid grid-cols-2 gap-4">
             <AdminActionCard icon={<Users size={24} />} label="Ranking" />
-            <AdminActionCard icon={<Mountain size={24} />} label="Novas Serras" />
+            <AdminActionCard icon={<Mountain size={24} />} label="Regiões" />
             <AdminActionCard icon={<BookOpen size={24} />} label="Diário" />
             <AdminActionCard icon={<Target size={24} />} label="Metas" />
           </div>
@@ -3557,7 +3688,7 @@ function PeakFormModal({
   mountainRanges,
   initialName = '',
   initialRangeId,
-  initialLocalType = 'pico',
+  initialLocalType = getSuggestedLocalTypeForRange(initialRangeId),
   initialAltitudeMetros = null,
   initialDropHeightMetros = null,
   onClose,
@@ -3604,7 +3735,10 @@ function PeakFormModal({
     return { value: Math.round(parsedValue), valid: true };
   };
 
-  const altitudeParsed = parseMetersInput(altitudeInput);
+  const showAltitudeField = usesAltitudeByLocalType(localType);
+  const altitudeParsed = showAltitudeField
+    ? parseMetersInput(altitudeInput)
+    : { value: null as number | null, valid: true };
   const dropHeightParsed = parseMetersInput(dropHeightInput);
   const hasInvalidNumericInput =
     !altitudeParsed.valid || (localType === 'cachoeira' && !dropHeightParsed.valid);
@@ -3641,11 +3775,22 @@ function PeakFormModal({
 
           <div className="space-y-1.5">
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-              Serra
+              Região / Grupo
             </label>
             <select
               value={rangeId}
-              onChange={(e) => setRangeId(e.target.value)}
+              onChange={(e) => {
+                const nextRangeId = e.target.value;
+                setRangeId(nextRangeId);
+
+                if (nextRangeId === ISLAND_RANGE_ID && localType === 'pico') {
+                  setLocalType('ilha');
+                }
+
+                if (nextRangeId !== ISLAND_RANGE_ID && localType === 'ilha') {
+                  setLocalType('pico');
+                }
+              }}
               className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-sm text-white focus:outline-none focus:border-primary transition-all"
             >
               {mountainRanges.map(range => (
@@ -3672,25 +3817,28 @@ function PeakFormModal({
               <option value="pico" style={{ color: '#0f172a', backgroundColor: '#ffffff' }}>Pico</option>
               <option value="morro" style={{ color: '#0f172a', backgroundColor: '#ffffff' }}>Morro</option>
               <option value="trilha" style={{ color: '#0f172a', backgroundColor: '#ffffff' }}>Trilha</option>
+              <option value="ilha" style={{ color: '#0f172a', backgroundColor: '#ffffff' }}>Ilha</option>
               <option value="cachoeira" style={{ color: '#0f172a', backgroundColor: '#ffffff' }}>Cachoeira</option>
             </select>
           </div>
 
-          <div className="space-y-1.5">
-            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-              Altitude (m)
-            </label>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              inputMode="numeric"
-              placeholder="Ex: 1538"
-              value={altitudeInput}
-              onChange={(e) => setAltitudeInput(e.target.value)}
-              className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-sm focus:outline-none focus:border-primary transition-all"
-            />
-          </div>
+          {showAltitudeField && (
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                Altitude (m)
+              </label>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                inputMode="numeric"
+                placeholder="Ex: 1538"
+                value={altitudeInput}
+                onChange={(e) => setAltitudeInput(e.target.value)}
+                className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-sm focus:outline-none focus:border-primary transition-all"
+              />
+            </div>
+          )}
 
           {localType === 'cachoeira' && (
             <div className="space-y-1.5">
@@ -3734,7 +3882,7 @@ function PeakFormModal({
                 name,
                 rangeId,
                 localType,
-                altitude_metros: altitudeParsed.value,
+                altitude_metros: showAltitudeField ? altitudeParsed.value : null,
                 altura_queda_metros: localType === 'cachoeira' ? dropHeightParsed.value : null,
               });
             }}
@@ -3910,19 +4058,19 @@ function HomeScreen({
         <h2 className="text-lg font-bold">Estatísticas do Trilheiro</h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <HikerStatisticCard
-            icon="🏔"
+            icon="🏔️"
             label="Picos"
             completed={statsByLocalType.pico.completed}
             total={statsByLocalType.pico.total}
           />
           <HikerStatisticCard
-            icon="⛰"
+            icon="🌄"
             label="Morros"
             completed={statsByLocalType.morro.completed}
             total={statsByLocalType.morro.total}
           />
           <HikerStatisticCard
-            icon="💧"
+            icon="💦"
             label="Cachoeiras"
             completed={statsByLocalType.cachoeira.completed}
             total={statsByLocalType.cachoeira.total}
@@ -3933,14 +4081,21 @@ function HomeScreen({
             completed={statsByLocalType.trilha.completed}
             total={statsByLocalType.trilha.total}
           />
+          <HikerStatisticCard
+            icon="🏝️"
+            label="Ilhas"
+            completed={statsByLocalType.ilha.completed}
+            total={statsByLocalType.ilha.total}
+            className="sm:col-span-2"
+          />
         </div>
       </section>
 
       <section className="space-y-4">
-        <h2 className="text-lg font-bold">Serras Exploradas</h2>
+        <h2 className="text-lg font-bold">Regiões Exploradas</h2>
         <div className="bg-neutral-forest/40 rounded-2xl p-5 border border-white/10">
-          <p className="text-sm font-bold text-slate-200">📍 Serras exploradas</p>
-          <p className="text-2xl font-black text-primary mt-2">{exploredRanges} / {totalRanges} serras</p>
+          <p className="text-sm font-bold text-slate-200">🧭 Regiões exploradas</p>
+          <p className="text-2xl font-black text-primary mt-2">{exploredRanges} / {totalRanges} regiões</p>
         </div>
       </section>
 
@@ -3982,21 +4137,29 @@ function HikerStatisticCard({
   label,
   completed,
   total,
+  className = '',
 }: {
   icon: string;
   label: string;
   completed: number;
   total: number;
+  className?: string;
 }) {
   return (
-    <div className="min-w-0 bg-neutral-forest/40 rounded-2xl p-4 border border-white/10">
-      <div className="text-2xl leading-none mb-3" aria-hidden>
+    <div className={`min-w-0 overflow-hidden rounded-[1.75rem] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(34,197,94,0.12),transparent_50%),linear-gradient(180deg,rgba(4,20,8,0.96),rgba(2,12,5,0.92))] p-4 shadow-[0_18px_40px_rgba(0,0,0,0.22)] ${className}`}>
+      <div className="text-[1.9rem] leading-none mb-3 drop-shadow-[0_4px_10px_rgba(255,255,255,0.08)]" aria-hidden>
         {icon}
       </div>
       <p className="break-words text-sm font-bold text-slate-200">{label}</p>
-      <div className="mt-1 flex items-end gap-1.5">
-        <span className="text-xl font-black text-primary leading-none">{completed}</span>
+      <div className="mt-3 flex items-end gap-1.5">
+        <span className="text-2xl font-black text-primary leading-none">{completed}</span>
         <span className="text-sm text-slate-400 leading-none mb-0.5">/ {total}</span>
+      </div>
+      <div className="mt-3 h-1.5 rounded-full bg-white/5 overflow-hidden">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-primary via-lime-300 to-emerald-200 transition-all"
+          style={{ width: `${total > 0 ? Math.min(100, (completed / total) * 100) : 0}%` }}
+        />
       </div>
     </div>
   );
@@ -4051,7 +4214,16 @@ function SerrasScreen({
       });
 
       if (peaks.length === 0) {
-        return null;
+        const shouldShowEmptyRange =
+          statusFilter !== 'DONE' &&
+          (!normalizedSearchTerm || rangeMatchesSearch);
+
+        return shouldShowEmptyRange
+          ? {
+              ...range,
+              peaks: [],
+            }
+          : null;
       }
 
       return {
@@ -4068,7 +4240,7 @@ function SerrasScreen({
           <button onClick={onBack} type="button" className="size-10 flex items-center justify-center rounded-full hover:bg-primary/10 transition-colors">
             <ChevronRight className="rotate-180" />
           </button>
-          <h1 className="text-lg font-bold tracking-tight">Checklist de Serras</h1>
+          <h1 className="text-lg font-bold tracking-tight">Checklist de Regiões</h1>
           {canManageCatalog ? (
             <button 
               onClick={onAddRange}
@@ -4087,7 +4259,7 @@ function SerrasScreen({
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-primary" size={18} />
           <input 
             type="text" 
-            placeholder="Buscar pico ou serra..." 
+            placeholder="Buscar local ou região..." 
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full bg-primary/5 border border-primary/20 rounded-xl h-12 pl-12 pr-4 text-sm focus:outline-none focus:border-primary transition-colors"
@@ -4173,6 +4345,7 @@ function MountainRangeAccordion({
     pico: [],
     morro: [],
     trilha: [],
+    ilha: [],
     cachoeira: [],
   };
 
@@ -4201,14 +4374,14 @@ function MountainRangeAccordion({
             <button
               type="button"
               onClick={() => {
-                const shouldDelete = window.confirm(`Excluir a serra "${range.name}" e todos os locais dela?`);
+                const shouldDelete = window.confirm(`Excluir a região "${range.name}" e todos os locais dela?`);
                 if (shouldDelete) {
                   onDeleteRange();
                 }
               }}
               className="ml-2 size-8 rounded-lg flex items-center justify-center bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors"
-              aria-label={`Excluir serra ${range.name}`}
-              title="Excluir serra"
+              aria-label={`Excluir região ${range.name}`}
+              title="Excluir região"
             >
               <Trash2 size={14} />
             </button>
@@ -4373,7 +4546,7 @@ function MountainRangeAccordion({
                   })}
                 </>
               ) : (
-                <p className="text-slate-500 text-xs py-2 italic">Nenhum pico listado ainda.</p>
+                <p className="text-slate-500 text-xs py-2 italic">Nenhum local cadastrado nesta região ainda.</p>
               )}
               
               {canManageCatalog && (
@@ -4398,6 +4571,7 @@ function RankingScreen({
   mountainRanges,
   participantNameMap,
   participantAvatarMap,
+  adminIdentityKeys,
   onOpenProfile,
   onBack,
 }: {
@@ -4405,6 +4579,7 @@ function RankingScreen({
   mountainRanges: MountainRange[],
   participantNameMap: Map<string, string>,
   participantAvatarMap: Map<string, string>,
+  adminIdentityKeys: Set<string>,
   onOpenProfile: () => void,
   onBack: () => void
 }) {
@@ -4514,6 +4689,7 @@ function RankingScreen({
             : [];
 
           participants.forEach(rawParticipant => {
+            const rawParticipantKey = normalizeText(rawParticipant);
             const participantName = resolveParticipantDisplayName(rawParticipant, participantNameMap);
             if (!participantName) {
               return;
@@ -4521,6 +4697,10 @@ function RankingScreen({
 
             const participantKey = normalizeText(participantName);
             if (!participantKey) {
+              return;
+            }
+
+            if (adminIdentityKeys.has(participantKey) || (rawParticipantKey && adminIdentityKeys.has(rawParticipantKey))) {
               return;
             }
 
@@ -4616,7 +4796,7 @@ function RankingScreen({
     ): RankingLeader => {
       const normalizedName = normalizeText(stats.name);
       const seed = normalizedName || participantKey || `trilheiro-${rank}`;
-      const avatar = participantAvatarMap.get(participantKey) ?? participantAvatarMap.get(normalizedName) ?? `https://picsum.photos/seed/${encodeURIComponent(seed)}/200/200`;
+      const avatar = participantAvatarMap.get(participantKey) ?? participantAvatarMap.get(normalizedName) ?? buildGeneratedAvatarUrl(seed);
       const picosCount = stats.trails.size;
       const altitudeTotal = Array.from(stats.altitudeLocals.values()).reduce(
         (acc, local) => acc + (typeof local.altitude_metros === 'number' ? local.altitude_metros : 0),
@@ -4772,7 +4952,7 @@ function RankingScreen({
     : rankingMode === 'ALTITUDE'
       ? '⛰ Ranking de Altitude'
       : rankingMode === 'SERRAS'
-        ? '📍 Serras Conquistadas'
+        ? '🧭 Regiões Conquistadas'
         : '⭐ Ranking Geral';
 
   const top1 = leaders[0];
@@ -4949,8 +5129,8 @@ function RankingScreen({
               >
                 <div className="pt-3 mt-3 border-t border-white/10 space-y-1.5">
                   <p className="text-sm text-slate-200">Picos conquistados: {userPicosConquistados}</p>
-                  <p className="text-sm text-slate-200">Serras exploradas: {userSerrasExploradas}</p>
-                  <p className="text-sm text-slate-200">Serras conquistadas: {userSerrasConquistadas}</p>
+                  <p className="text-sm text-slate-200">Regiões exploradas: {userSerrasExploradas}</p>
+                  <p className="text-sm text-slate-200">Regiões conquistadas: {userSerrasConquistadas}</p>
                   <p className="text-sm text-slate-200">
                     Maior altitude: {typeof userMaiorAltitude === 'number' ? `${userMaiorAltitude} m` : 'Sem registro'}
                   </p>
@@ -4969,17 +5149,17 @@ function RankingScreen({
                   : rankingMode === 'ALTITUDE'
                     ? 'Sem ranking de altitude ainda. Registre conquistas em picos com altitude para gerar o ranking.'
                     : rankingMode === 'SERRAS'
-                      ? 'Sem ranking de serras conquistadas ainda. Complete todas as metas de uma serra para pontuar aqui.'
+                      ? 'Sem ranking de regiões conquistadas ainda. Complete todas as metas de uma região para pontuar aqui.'
                       : 'Sem ranking geral ainda. Registre conquistas para calcular a pontuação combinada.'}
               </p>
             </div>
           </section>
         ) : (
           <>
-            <section className="pt-16 flex items-end justify-center gap-2">
-              {top2 ? <PodiumItem leader={top2} rank={2} height="h-20" mode={rankingMode} isTied={isTiedLeader(top2)} onViewTrails={() => setSelectedLeaderId(top2.id)} /> : <div className="flex-1 max-w-[120px]" />}
-              {top1 ? <PodiumItem leader={top1} rank={1} height="h-28" mode={rankingMode} featured isTied={isTiedLeader(top1)} onViewTrails={() => setSelectedLeaderId(top1.id)} /> : <div className="flex-1 max-w-[120px]" />}
-              {top3 ? <PodiumItem leader={top3} rank={3} height="h-16" mode={rankingMode} isTied={isTiedLeader(top3)} onViewTrails={() => setSelectedLeaderId(top3.id)} /> : <div className="flex-1 max-w-[120px]" />}
+            <section className="pt-16 grid grid-cols-3 items-end gap-3">
+              {top2 ? <PodiumItem leader={top2} rank={2} height="h-20" mode={rankingMode} isTied={isTiedLeader(top2)} onViewTrails={() => setSelectedLeaderId(top2.id)} /> : <div className="min-h-[14rem]" />}
+              {top1 ? <PodiumItem leader={top1} rank={1} height="h-28" mode={rankingMode} featured isTied={isTiedLeader(top1)} onViewTrails={() => setSelectedLeaderId(top1.id)} /> : <div className="min-h-[16rem]" />}
+              {top3 ? <PodiumItem leader={top3} rank={3} height="h-16" mode={rankingMode} isTied={isTiedLeader(top3)} onViewTrails={() => setSelectedLeaderId(top3.id)} /> : <div className="min-h-[13rem]" />}
             </section>
 
             <section className="space-y-3">
@@ -5034,7 +5214,7 @@ function PodiumItem({ leader, rank, height, mode, featured = false, isTied = fal
         : `${leader.score} pts`;
 
   return (
-    <div className={`flex flex-col items-center flex-1 max-w-[120px] ${featured ? 'scale-110' : ''}`}>
+    <div className={`flex min-w-0 flex-col items-center ${featured ? 'scale-110 sm:scale-[1.08]' : ''}`}>
       <div className="relative mb-3">
         {featured && (
           <div className="absolute -top-8 left-1/2 -translate-x-1/2 text-primary animate-pulse">
@@ -5051,7 +5231,7 @@ function PodiumItem({ leader, rank, height, mode, featured = false, isTied = fal
       <p className="font-bold text-center text-xs leading-snug break-words w-full">{leader.name}</p>
       <p className="text-primary text-[10px] font-bold">{scoreLabel}</p>
       {mode === 'SERRAS' && (
-        <p className="text-[9px] text-primary font-bold uppercase tracking-tighter">Serras Conquistadas</p>
+        <p className="text-[9px] text-primary font-bold uppercase tracking-tighter">Regiões Conquistadas</p>
       )}
       {mode === 'ALTITUDE' && leader.highestAltitudePeak && (
         <p className="text-[9px] text-slate-400 truncate w-full text-center">({leader.highestAltitudePeak})</p>
@@ -5121,7 +5301,7 @@ function LeaderRow({ leader, mode, isTied = false, onViewTrails }: LeaderRowProp
             {leader.highestAltitudePeak ? `(${leader.highestAltitudePeak})` : 'Altitude'}
           </p>
         ) : mode === 'SERRAS' ? (
-          <p className="text-[9px] text-primary font-bold uppercase tracking-tighter">Serras Conquistadas</p>
+          <p className="text-[9px] text-primary font-bold uppercase tracking-tighter">Regiões Conquistadas</p>
         ) : (
           <p className="text-[9px] text-primary font-bold uppercase tracking-tighter">Score</p>
         )}
@@ -5179,7 +5359,7 @@ function TrailScoreModal({
           <div>
             <p className="text-[10px] font-bold text-primary uppercase tracking-widest">
               {mode === 'SERRAS'
-                ? 'Serras Conquistadas'
+                ? 'Regiões Conquistadas'
                 : mode === 'GERAL'
                   ? 'Score Geral'
                   : mode === 'ALTITUDE'
@@ -5211,7 +5391,7 @@ function TrailScoreModal({
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-1.5">
               <p className="text-[10px] font-bold uppercase tracking-wider text-primary">Fórmula do Score</p>
               <p className="text-xs text-slate-300">{leader.peaks} picos × 10 = {leader.peaks * 10}</p>
-              <p className="text-xs text-slate-300">{leader.conqueredRangesCount} serras conquistadas × 30 = {leader.conqueredRangesCount * 30}</p>
+              <p className="text-xs text-slate-300">{leader.conqueredRangesCount} regiões conquistadas × 30 = {leader.conqueredRangesCount * 30}</p>
               <p className="text-xs text-slate-300">{leader.trilhasCount} trilhas × 5 = {leader.trilhasCount * 5}</p>
               <p className="text-xs text-slate-300">{leader.cachoeirasCount} cachoeiras × 3 = {leader.cachoeirasCount * 3}</p>
               <p className="text-sm font-bold text-primary pt-1 border-t border-primary/20">Total: {leader.score} pts</p>
@@ -5220,7 +5400,7 @@ function TrailScoreModal({
         ) : mode === 'SERRAS' ? (
           conqueredRanges.length === 0 ? (
             <div className="py-8 text-center bg-white/5 rounded-2xl border border-dashed border-white/10">
-              <p className="text-slate-400 text-sm italic">Sem serras conquistadas para este trilheiro.</p>
+              <p className="text-slate-400 text-sm italic">Sem regiões conquistadas para este trilheiro.</p>
             </div>
           ) : (
             <div className="space-y-2">

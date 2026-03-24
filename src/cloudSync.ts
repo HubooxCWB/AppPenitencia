@@ -32,6 +32,7 @@ export interface CloudAppUser {
 export interface CloudParticipantUser {
   username: string;
   display_name: string;
+  role?: 'ADMIN' | 'USER' | string;
   avatar_url?: string | null;
   created_at?: string;
 }
@@ -60,6 +61,12 @@ interface SupabaseAuthSession {
 }
 
 const AUTH_SESSION_STORAGE_KEY = 'penitencia-supabase-auth-session';
+
+export const buildGeneratedAvatarUrl = (seed: string) =>
+  `https://picsum.photos/seed/${encodeURIComponent(seed || 'hiker')}/200/200`;
+
+export const isGeneratedAvatarUrl = (avatarUrl: string | null | undefined, seed: string) =>
+  String(avatarUrl ?? '').trim() === buildGeneratedAvatarUrl(seed);
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
@@ -138,7 +145,7 @@ const buildAuthProfile = (user: SupabaseAuthUser | null | undefined): CloudAuthP
     getMetadataString(user, 'name') ??
     username;
   // Keep auth metadata lean; avatars live in public.app_users to avoid oversized JWTs.
-  const avatarUrl = `https://picsum.photos/seed/${encodeURIComponent(username || 'hiker')}/200/200`;
+  const avatarUrl = buildGeneratedAvatarUrl(username);
 
   return {
     id: user?.id ?? username,
@@ -914,7 +921,18 @@ export const listParticipantDirectory = async (): Promise<CloudParticipantUser[]
     }
 
     const rows = (await response.json()) as unknown;
-    return Array.isArray(rows) ? (rows as CloudParticipantUser[]) : null;
+    return Array.isArray(rows)
+      ? rows
+          .map(row => normalizeCloudAppUser(row))
+          .filter((row): row is CloudAppUser => Boolean(row))
+          .map(row => ({
+            username: row.username,
+            display_name: row.display_name,
+            role: row.role,
+            avatar_url: row.avatar_url,
+            created_at: row.created_at,
+          }))
+      : null;
   } catch {
     return null;
   }
