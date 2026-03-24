@@ -169,7 +169,10 @@ const buildAdminIdentityKeys = (
   registeredUsers: CloudParticipantUser[],
   currentUser?: User | null,
 ) => {
-  const adminKeys = new Set<string>();
+  const adminKeys = new Set<string>([
+    'penitencia',
+    'penitência',
+  ]);
   const registerIdentity = (value: unknown) => {
     const normalizedValue = normalizeText(value);
     if (normalizedValue) {
@@ -4690,8 +4693,6 @@ function RankingScreen({
 
           participants.forEach(rawParticipant => {
             const rawParticipantKey = normalizeText(rawParticipant);
-            const isKnownParticipant =
-              Boolean(rawParticipantKey && participantNameMap.has(rawParticipantKey));
             const participantName = resolveParticipantDisplayName(rawParticipant, participantNameMap);
             if (!participantName) {
               return;
@@ -4699,10 +4700,6 @@ function RankingScreen({
 
             const participantKey = normalizeText(participantName);
             if (!participantKey) {
-              return;
-            }
-
-            if (!isKnownParticipant && !participantNameMap.has(participantKey)) {
               return;
             }
 
