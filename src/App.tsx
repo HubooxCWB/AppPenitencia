@@ -4690,6 +4690,8 @@ function RankingScreen({
 
           participants.forEach(rawParticipant => {
             const rawParticipantKey = normalizeText(rawParticipant);
+            const isKnownParticipant =
+              Boolean(rawParticipantKey && participantNameMap.has(rawParticipantKey));
             const participantName = resolveParticipantDisplayName(rawParticipant, participantNameMap);
             if (!participantName) {
               return;
@@ -4697,6 +4699,10 @@ function RankingScreen({
 
             const participantKey = normalizeText(participantName);
             if (!participantKey) {
+              return;
+            }
+
+            if (!isKnownParticipant && !participantNameMap.has(participantKey)) {
               return;
             }
 
