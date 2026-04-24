@@ -62,10 +62,10 @@ interface SupabaseAuthSession {
 
 const AUTH_SESSION_STORAGE_KEY = 'penitencia-supabase-auth-session';
 
-export const buildGeneratedAvatarUrl = (seed: string) =>
-  `https://picsum.photos/seed/${encodeURIComponent(seed || 'hiker')}/200/200`;
+export const buildGeneratedAvatarUrl = (_seed: string) => '';
 
 export const isGeneratedAvatarUrl = (avatarUrl: string | null | undefined, seed: string) =>
+  String(avatarUrl ?? '').trim().toLowerCase().includes('picsum.photos/') ||
   String(avatarUrl ?? '').trim() === buildGeneratedAvatarUrl(seed);
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
@@ -144,8 +144,10 @@ const buildAuthProfile = (user: SupabaseAuthUser | null | undefined): CloudAuthP
     getMetadataString(user, 'display_name') ??
     getMetadataString(user, 'name') ??
     username;
-  // Keep auth metadata lean; avatars live in public.app_users to avoid oversized JWTs.
-  const avatarUrl = buildGeneratedAvatarUrl(username);
+  const avatarUrl =
+    getMetadataString(user, 'avatar_url') ??
+    getMetadataString(user, 'picture') ??
+    '';
 
   return {
     id: user?.id ?? username,

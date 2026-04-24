@@ -121,6 +121,63 @@ create index if not exists idx_peaks_range_id on public.peaks(range_id);
 create index if not exists idx_peaks_tipo_local on public.peaks(tipo_local);
 create index if not exists idx_completions_peak_id on public.completions(peak_id);
 create index if not exists idx_completions_owner_user_id on public.completions(owner_user_id);
+
+do $$
+declare
+  v_duplicate_group record;
+  v_participant record;
+begin
+  for v_duplicate_group in
+    select
+      peak_id,
+      owner_user_id,
+      completion_date,
+      (array_agg(id order by created_at, sort_order, id))[1] as keep_completion_id,
+      array_agg(id order by created_at, sort_order, id) as completion_ids,
+      min(sort_order) as keep_sort_order,
+      max(nullif(wikiloc_url, '')) as merged_wikiloc_url
+    from public.completions
+    where owner_user_id is not null
+    group by peak_id, owner_user_id, completion_date
+    having count(*) > 1
+  loop
+    for v_participant in
+      select distinct on (cp.participant_name)
+        cp.participant_name,
+        cp.sort_order
+      from public.completion_participants cp
+      where cp.completion_id = any(v_duplicate_group.completion_ids)
+      order by cp.participant_name, cp.sort_order
+    loop
+      insert into public.completion_participants (completion_id, participant_name, sort_order)
+      values (
+        v_duplicate_group.keep_completion_id,
+        v_participant.participant_name,
+        v_participant.sort_order
+      )
+      on conflict (completion_id, participant_name)
+      do update set sort_order = least(
+        public.completion_participants.sort_order,
+        excluded.sort_order
+      );
+    end loop;
+
+    update public.completions
+    set
+      sort_order = coalesce(v_duplicate_group.keep_sort_order, sort_order),
+      wikiloc_url = coalesce(nullif(wikiloc_url, ''), v_duplicate_group.merged_wikiloc_url),
+      updated_at = now()
+    where id = v_duplicate_group.keep_completion_id;
+
+    delete from public.completions
+    where id = any(v_duplicate_group.completion_ids)
+      and id <> v_duplicate_group.keep_completion_id;
+  end loop;
+end $$;
+
+create unique index if not exists idx_completions_individual_daily_checkin
+  on public.completions(peak_id, owner_user_id, completion_date)
+  where owner_user_id is not null;
 create index if not exists idx_completion_participants_completion_id on public.completion_participants(completion_id);
 create unique index if not exists idx_app_users_auth_user_id_unique
   on public.app_users(auth_user_id)
@@ -128,6 +185,11 @@ create unique index if not exists idx_app_users_auth_user_id_unique
 create unique index if not exists idx_app_users_email_unique
   on public.app_users(lower(email))
   where email is not null;
+
+update public.app_users
+set avatar_url = null,
+    updated_at = now()
+where avatar_url ilike '%picsum.photos/%';
 
 do $$
 begin
@@ -250,7 +312,13 @@ $$;
 drop function if exists public.upsert_app_user(text, text, text);
 drop function if exists public.list_app_users();
 drop function if exists public.list_participant_directory();
+drop function if exists public.list_participant_directory(jsonb);
 drop function if exists public.get_my_app_user();
+drop function if exists public.get_my_app_user(jsonb);
+drop function if exists public.upsert_completion(text);
+drop function if exists public.upsert_completion(text, text);
+drop function if exists public.upsert_completion(text, text, text);
+drop function if exists public.upsert_completion(text, text, text, jsonb);
 drop function if exists public.upsert_completion(text, text, text, jsonb, text);
 drop function if exists public.delete_completion(text);
 
@@ -279,7 +347,10 @@ begin
   v_email := lower(trim(coalesce(p_email, '')));
   v_username := lower(trim(coalesce(p_username, '')));
   v_display_name := nullif(trim(coalesce(p_display_name, '')), '');
-  v_avatar_url := nullif(trim(coalesce(p_avatar_url, '')), '');
+  v_avatar_url := case
+    when nullif(trim(coalesce(p_avatar_url, '')), '') ilike '%picsum.photos/%' then null
+    else nullif(trim(coalesce(p_avatar_url, '')), '')
+  end;
 
   if v_auth_user_id is null then
     raise exception 'auth_user_id is required';
@@ -689,8 +760,7 @@ declare
   v_completion_label text;
   v_peak_exists boolean;
   v_existing public.completions;
-  v_participant_name text;
-  v_participant_order integer := 0;
+  v_current_participant_name text;
 begin
   if auth.uid() is null then
     raise exception 'forbidden';
@@ -706,7 +776,23 @@ begin
     raise exception 'peak not found';
   end if;
 
+  v_completion_date := public.parse_snapshot_date(p_completion_date);
+  v_completion_label := nullif(trim(coalesce(p_completion_date, '')), '');
+  if v_completion_label is null or v_completion_label !~ '^\d{2}/\d{2}/\d{4}$' then
+    v_completion_label := public.to_br_date(v_completion_date);
+  end if;
+
   v_completion_id := nullif(trim(coalesce(p_completion_id, '')), '');
+  if v_completion_id is null then
+    select c.id
+    into v_completion_id
+    from public.completions c
+    where c.peak_id = p_peak_id
+      and c.owner_user_id = auth.uid()
+      and c.completion_date = v_completion_date
+    limit 1;
+  end if;
+
   if v_completion_id is null then
     v_completion_id := gen_random_uuid()::text;
   end if;
@@ -719,15 +805,35 @@ begin
   if found then
     if v_existing.owner_user_id is distinct from auth.uid()
       and not public.is_current_user_admin()
+      and not (
+        v_existing.owner_user_id is null
+        and exists (
+          select 1
+          from public.completion_participants cp
+          join public.app_users u
+            on lower(cp.participant_name) = lower(u.display_name)
+            or lower(cp.participant_name) = lower(u.username)
+          where cp.completion_id = v_existing.id
+            and u.auth_user_id = auth.uid()
+            and u.is_active = true
+        )
+      )
     then
       raise exception 'forbidden';
     end if;
   end if;
 
-  v_completion_date := public.parse_snapshot_date(p_completion_date);
-  v_completion_label := nullif(trim(coalesce(p_completion_date, '')), '');
-  if v_completion_label is null or v_completion_label !~ '^\d{2}/\d{2}/\d{4}$' then
-    v_completion_label := public.to_br_date(v_completion_date);
+  select coalesce(nullif(trim(u.display_name), ''), nullif(trim(u.username), ''))
+  into v_current_participant_name
+  from public.app_users u
+  where u.auth_user_id = auth.uid()
+    and u.is_active = true
+  limit 1;
+
+  v_current_participant_name := coalesce(v_current_participant_name, auth.uid()::text);
+
+  if p_participants is not null and jsonb_typeof(p_participants) <> 'array' then
+    raise exception 'participants must be a JSON array';
   end if;
 
   insert into public.completions (
@@ -757,24 +863,10 @@ begin
   delete from public.completion_participants
   where completion_id = v_completion_id;
 
-  if p_participants is not null and jsonb_typeof(p_participants) <> 'array' then
-    raise exception 'participants must be a JSON array';
-  end if;
-
-  for v_participant_name in
-    select value
-    from jsonb_array_elements_text(coalesce(p_participants, '[]'::jsonb))
-  loop
-    if v_participant_name is null or btrim(v_participant_name) = '' then
-      continue;
-    end if;
-
-    v_participant_order := v_participant_order + 1;
-    insert into public.completion_participants (completion_id, participant_name, sort_order)
-    values (v_completion_id, btrim(v_participant_name), v_participant_order)
-    on conflict (completion_id, participant_name)
-    do update set sort_order = excluded.sort_order;
-  end loop;
+  insert into public.completion_participants (completion_id, participant_name, sort_order)
+  values (v_completion_id, v_current_participant_name, 1)
+  on conflict (completion_id, participant_name)
+  do update set sort_order = excluded.sort_order;
 
   return jsonb_build_object(
     'id', v_completion_id,
@@ -819,6 +911,19 @@ begin
 
   if v_owner_user_id is distinct from auth.uid()
     and not public.is_current_user_admin()
+    and not (
+      v_owner_user_id is null
+      and exists (
+        select 1
+        from public.completion_participants cp
+        join public.app_users u
+          on lower(cp.participant_name) = lower(u.display_name)
+          or lower(cp.participant_name) = lower(u.username)
+        where cp.completion_id = p_completion_id
+          and u.auth_user_id = auth.uid()
+          and u.is_active = true
+      )
+    )
   then
     raise exception 'forbidden';
   end if;

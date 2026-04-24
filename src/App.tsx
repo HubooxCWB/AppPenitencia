@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   Home as HomeIcon, 
   Mountain, 
+  MountainSnow,
   BookOpen, 
   Target, 
   Trophy, 
@@ -38,7 +39,10 @@ import {
   AlertTriangle,
   CloudOff,
   RefreshCw,
-  Wrench
+  Wrench,
+  Triangle,
+  Waves,
+  Route
 } from 'lucide-react';
 import { 
   Screen, 
@@ -139,7 +143,7 @@ const buildParticipantAvatarMap = (
   const participantAvatarMap = new Map<string, string>();
   const registerAvatar = (alias: unknown, avatar: unknown) => {
     const normalizedAlias = normalizeText(alias);
-    const trimmedAvatar = String(avatar ?? '').trim();
+    const trimmedAvatar = resolveSafeAvatarUrl(avatar);
     if (!normalizedAlias || !trimmedAvatar) {
       return;
     }
@@ -324,6 +328,43 @@ const sanitizeParticipants = (
     ),
   );
 
+type CompletionGroup = {
+  date: string;
+  completions: PeakCompletion[];
+  participants: string[];
+};
+
+const groupCompletionsByDate = (
+  completions: PeakCompletion[],
+  participantNameMap: Map<string, string>,
+): CompletionGroup[] => {
+  const groupsByDate = new Map<string, CompletionGroup>();
+
+  completions.forEach(completion => {
+    const date = completion.date || 'Sem data';
+    const existingGroup = groupsByDate.get(date) ?? {
+      date,
+      completions: [],
+      participants: [],
+    };
+    const participantSet = new Set(existingGroup.participants.map(participant => normalizeText(participant)));
+
+    existingGroup.completions.push(completion);
+    (Array.isArray(completion.participants) ? completion.participants : []).forEach(participant => {
+      const displayName = resolveParticipantDisplayName(participant, participantNameMap);
+      const participantKey = normalizeText(displayName);
+      if (displayName && !participantSet.has(participantKey)) {
+        existingGroup.participants.push(displayName);
+        participantSet.add(participantKey);
+      }
+    });
+
+    groupsByDate.set(date, existingGroup);
+  });
+
+  return Array.from(groupsByDate.values());
+};
+
 const sanitizeUsername = (value: string) =>
   value
     .normalize('NFD')
@@ -391,6 +432,40 @@ const buildOptimizedAvatarDataUrl = async (file: File, size = 512): Promise<stri
   return canvas.toDataURL('image/jpeg', 0.92);
 };
 
+const resolveSafeAvatarUrl = (avatarUrl: unknown) => {
+  const avatar = String(avatarUrl ?? '').trim();
+  return avatar.toLowerCase().includes('picsum.photos/') ? '' : avatar;
+};
+
+function AvatarImage({
+  src,
+  alt,
+  className,
+}: {
+  src?: string | null;
+  alt: string;
+  className: string;
+}) {
+  const safeSrc = resolveSafeAvatarUrl(src);
+
+  if (!safeSrc) {
+    return (
+      <div className={`${className} flex items-center justify-center bg-primary/10 text-primary`}>
+        <UserIcon size={22} />
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={safeSrc}
+      alt={alt}
+      className={className}
+      referrerPolicy="no-referrer"
+    />
+  );
+}
+
 const mergeUserWithCloudDirectory = (
   baseUser: User,
   row: CloudAppUser | null | undefined,
@@ -404,7 +479,7 @@ const mergeUserWithCloudDirectory = (
     name: String(row.display_name ?? '').trim() || baseUser.name,
     username: String(row.username ?? '').trim() || baseUser.username,
     email: String(row.email ?? '').trim() || baseUser.email,
-    avatar: String(row.avatar_url ?? '').trim() || baseUser.avatar,
+    avatar: resolveSafeAvatarUrl(row.avatar_url) || resolveSafeAvatarUrl(baseUser.avatar),
     role: row.role === 'ADMIN' ? 'ADMIN' : 'USER',
   };
 };
@@ -414,7 +489,7 @@ const toAppUserFromAuthProfile = (profile: CloudAuthProfile): User => ({
   name: profile.displayName,
   username: profile.username,
   email: profile.email,
-  avatar: profile.avatarUrl,
+  avatar: resolveSafeAvatarUrl(profile.avatarUrl),
   role: profile.role,
 });
 
@@ -1710,24 +1785,21 @@ export default function App() {
       return;
     }
 
-    const baseParticipants = sanitizeParticipants(data.participants, participantNameMap)
-      .filter(participant => !adminIdentityKeys.has(normalizeText(participant)));
     const currentUserDisplayName = resolveParticipantDisplayName(user.name, participantNameMap) || user.name;
-    const normalizedCurrentUserName = normalizeText(currentUserDisplayName);
-    const hasCurrentUser = baseParticipants.some(
-      participant => normalizeText(participant) === normalizedCurrentUserName,
-    );
-    const participantsToPersist = user.role === 'ADMIN'
-      ? baseParticipants
-      : hasCurrentUser
-        ? baseParticipants
-        : [...baseParticipants, currentUserDisplayName];
+    const participantsToPersist = [currentUserDisplayName];
+    const existingSameDayCompletionId = completionId ?? mountainRanges
+      .find(range => range.id === rangeId)
+      ?.peaks.find(peak => peak.id === peakId)
+      ?.completions.find(completion =>
+        completion.date === data.date &&
+        isCompletionOwnedByCurrentUser(completion)
+      )?.id;
 
     if (cloudSyncEnabled) {
       void (async () => {
         const savedCompletion = await upsertCloudCompletion({
           peakId,
-          completionId,
+          completionId: existingSameDayCompletionId,
           date: data.date,
           participants: participantsToPersist,
           wikilocUrl: data.wikilocUrl,
@@ -1747,11 +1819,11 @@ export default function App() {
           const newPeaks = range.peaks.map(peak => {
             if (peak.id !== peakId) return peak;
 
-            if (completionId) {
+            if (existingSameDayCompletionId) {
               return {
                 ...peak,
                 completions: peak.completions.map(c =>
-                  c.id === completionId
+                  c.id === existingSameDayCompletionId
                     ? {
                         ...c,
                         id: completion.id,
@@ -1796,13 +1868,13 @@ export default function App() {
       const newPeaks = range.peaks.map(peak => {
         if (peak.id !== peakId) return peak;
         
-        if (completionId) {
+        if (existingSameDayCompletionId) {
           // Update existing completion
-          const existing = peak.completions.find(c => c.id === completionId);
+          const existing = peak.completions.find(c => c.id === existingSameDayCompletionId);
           return {
             ...peak,
             completions: peak.completions.map(c => 
-              c.id === completionId 
+              c.id === existingSameDayCompletionId 
                 ? { 
                     ...c, 
                     date: data.date, 
@@ -2494,16 +2566,24 @@ function CompletionModal({
   };
 
   const [date, setDate] = useState(initialData ? parseBRDateToISO(initialData.date) : new Date().toISOString().split('T')[0]);
-  const [participantInput, setParticipantInput] = useState('');
-  const [participantError, setParticipantError] = useState('');
-  const [participants, setParticipants] = useState<string[]>(
-    initialData?.participants && initialData.participants.length > 0
-      ? sanitizeParticipants(initialData.participants, participantNameMap)
-      : isAdmin
-        ? []
-        : [resolveParticipantDisplayName(currentUser.name, participantNameMap) || currentUser.name],
-  );
+  const dateInputRef = useRef<HTMLInputElement | null>(null);
+  const currentUserDisplayName = resolveParticipantDisplayName(currentUser.name, participantNameMap) || currentUser.name;
+  const participants = isReadOnly
+    ? sanitizeParticipants(initialData?.participants ?? [], participantNameMap)
+    : [currentUserDisplayName];
   const [wikilocUrl, setWikilocUrl] = useState(initialData?.wikilocUrl || '');
+
+  const openDatePicker = () => {
+    const input = dateInputRef.current;
+    if (!input || isReadOnly) {
+      return;
+    }
+
+    input.focus();
+    if (typeof input.showPicker === 'function') {
+      input.showPicker();
+    }
+  };
 
   useEffect(() => {
     const previousBodyOverflow = document.body.style.overflow;
@@ -2517,45 +2597,6 @@ function CompletionModal({
       document.documentElement.style.overflow = previousHtmlOverflow;
     };
   }, []);
-
-  const addParticipantByName = (name: string) => {
-    const resolvedName = resolveParticipantDisplayName(name, participantNameMap);
-    if (!resolvedName || !participantNameMap.has(normalizeText(name))) {
-      setParticipantError('Usuário não encontrado na plataforma.');
-      return;
-    }
-
-    const alreadyAdded = participants.some(
-      participant => normalizeText(participant) === normalizeText(resolvedName),
-    );
-    if (alreadyAdded) {
-      setParticipantError('Esse usuário já foi adicionado.');
-      return;
-    }
-
-    setParticipants([...participants, resolvedName]);
-    setParticipantInput('');
-    setParticipantError('');
-  };
-
-  const addParticipant = () => {
-    addParticipantByName(participantInput);
-  };
-
-  const removeParticipant = (name: string) => {
-    // Usuário sempre permanece como participante da própria conquista (para manter a autoria).
-    if (!isAdmin && normalizeText(name) === normalizeText(resolveParticipantDisplayName(currentUser.name, participantNameMap))) {
-      return;
-    }
-    setParticipants(participants.filter(p => p !== name));
-  };
-
-  const filteredSuggestions = participantInput.trim()
-    ? participantSuggestions
-        .filter(name => normalizeText(name).includes(normalizeText(participantInput)))
-        .filter(name => !participants.some(participant => normalizeText(participant) === normalizeText(name)))
-        .slice(0, 6)
-    : [];
 
   return (
     <motion.div 
@@ -2585,80 +2626,38 @@ function CompletionModal({
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
               <Calendar size={12} /> Data da Conquista
             </label>
-            <input 
-              type="date" 
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              disabled={isReadOnly}
-              className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-base sm:text-sm focus:outline-none focus:border-primary transition-all text-white"
-            />
-          </div>
-
-          {/* Participants */}
-          <div className="space-y-1.5">
-            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
-              <Users size={12} /> Participantes
-            </label>
-            <div className="flex items-start gap-2">
-              <input 
-                type="text" 
-                placeholder="Buscar usuário cadastrado"
-                value={participantInput}
-                onChange={(e) => {
-                  setParticipantInput(e.target.value);
-                  if (participantError) {
-                    setParticipantError('');
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    addParticipant();
-                  }
-                }}
+            <div className="relative">
+              <input
+                ref={dateInputRef}
+                type="date"
+                value={date}
+                onClick={openDatePicker}
+                onChange={(e) => setDate(e.target.value)}
                 disabled={isReadOnly}
-                className="flex-1 min-w-0 bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-base sm:text-sm focus:outline-none focus:border-primary transition-all"
+                className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 pl-4 pr-12 text-base sm:text-sm focus:outline-none focus:border-primary transition-all text-white"
               />
-              <button 
-                onClick={addParticipant}
+              <button
                 type="button"
-                disabled={isReadOnly || !participantNameMap.has(normalizeText(participantInput))}
-                className="size-12 shrink-0 bg-primary/10 text-primary border border-primary/20 rounded-2xl flex items-center justify-center disabled:opacity-50"
+                onClick={openDatePicker}
+                disabled={isReadOnly}
+                className="absolute right-2 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-xl bg-primary/10 text-primary disabled:opacity-50"
+                aria-label="Abrir calendário"
+                title="Abrir calendário"
               >
-                <Plus size={20} />
+                <Calendar size={16} />
               </button>
             </div>
-            {isLoadingParticipantSuggestions && (
-              <p className="text-[11px] text-slate-400">Carregando usuários da plataforma...</p>
-            )}
-            {!isLoadingParticipantSuggestions && participantSuggestions.length === 0 && (
-              <p className="text-[11px] text-slate-400">Nenhum usuário da plataforma disponível para seleção.</p>
-            )}
-            {participantError && (
-              <p className="text-[11px] text-red-300">{participantError}</p>
-            )}
-            {filteredSuggestions.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-2">
-                {filteredSuggestions.map(name => (
-                  <button
-                    key={name}
-                    type="button"
-                    onClick={() => addParticipantByName(name)}
-                    disabled={isReadOnly}
-                    className="text-[10px] font-bold px-3 py-1.5 rounded-full border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-                  >
-                    {name}
-                  </button>
-                ))}
-              </div>
-            )}
+          </div>
+
+          {/* Participant */}
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
+              <UserIcon size={12} /> {isReadOnly ? 'Participantes' : 'Check-in individual'}
+            </label>
             <div className="flex flex-wrap gap-2 mt-2">
               {participants.map(p => (
                 <span key={p} className="bg-primary/10 text-primary text-[10px] font-bold px-3 py-1.5 rounded-full border border-primary/20 flex items-center gap-1.5">
                   {p}
-                  {!isReadOnly && (
-                    <button type="button" onClick={() => removeParticipant(p)}><X size={10} /></button>
-                  )}
                 </span>
               ))}
             </div>
@@ -3269,11 +3268,10 @@ function PerfilScreen({
       <div className="flex min-w-0 flex-col items-center space-y-4">
         <div className="relative">
           <div className="size-32 rounded-full border-4 border-primary p-1">
-            <img 
-              src={draftAvatar || user.avatar} 
-              alt={user.name} 
+            <AvatarImage
+              src={draftAvatar || user.avatar}
+              alt={user.name}
               className="w-full h-full object-cover rounded-full"
-              referrerPolicy="no-referrer"
             />
           </div>
           <button
@@ -3981,11 +3979,10 @@ function HomeScreen({
       <header className="flex min-w-0 items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           <div className="size-12 shrink-0 rounded-full border-2 border-primary overflow-hidden p-0.5">
-            <img 
+            <AvatarImage
               src={user.avatar}
               alt={user.name}
               className="w-full h-full object-cover rounded-full"
-              referrerPolicy="no-referrer"
             />
           </div>
           <div className="min-w-0">
@@ -4061,31 +4058,31 @@ function HomeScreen({
         <h2 className="text-lg font-bold">Estatísticas do Trilheiro</h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <HikerStatisticCard
-            icon="🏔️"
+            icon={<MountainSnow size={22} strokeWidth={2.5} />}
             label="Picos"
             completed={statsByLocalType.pico.completed}
             total={statsByLocalType.pico.total}
           />
           <HikerStatisticCard
-            icon="🌄"
+            icon={<Triangle size={20} strokeWidth={2.5} />}
             label="Morros"
             completed={statsByLocalType.morro.completed}
             total={statsByLocalType.morro.total}
           />
           <HikerStatisticCard
-            icon="💦"
+            icon={<Waves size={22} strokeWidth={2.5} />}
             label="Cachoeiras"
             completed={statsByLocalType.cachoeira.completed}
             total={statsByLocalType.cachoeira.total}
           />
           <HikerStatisticCard
-            icon="🥾"
+            icon={<Route size={22} strokeWidth={2.5} />}
             label="Trilhas"
             completed={statsByLocalType.trilha.completed}
             total={statsByLocalType.trilha.total}
           />
           <HikerStatisticCard
-            icon="🏝️"
+            icon={<MapIcon size={22} strokeWidth={2.5} />}
             label="Ilhas"
             completed={statsByLocalType.ilha.completed}
             total={statsByLocalType.ilha.total}
@@ -4142,7 +4139,7 @@ function HikerStatisticCard({
   total,
   className = '',
 }: {
-  icon: string;
+  icon: React.ReactNode;
   label: string;
   completed: number;
   total: number;
@@ -4150,7 +4147,7 @@ function HikerStatisticCard({
 }) {
   return (
     <div className={`min-w-0 overflow-hidden rounded-[1.75rem] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(34,197,94,0.12),transparent_50%),linear-gradient(180deg,rgba(4,20,8,0.96),rgba(2,12,5,0.92))] p-4 shadow-[0_18px_40px_rgba(0,0,0,0.22)] ${className}`}>
-      <div className="text-[1.9rem] leading-none mb-3 drop-shadow-[0_4px_10px_rgba(255,255,255,0.08)]" aria-hidden>
+      <div className="mb-3 flex size-8 items-center justify-center rounded-lg border border-primary/15 bg-primary/5 text-primary" aria-hidden>
         {icon}
       </div>
       <p className="break-words text-sm font-bold text-slate-200">{label}</p>
@@ -4291,6 +4288,7 @@ function SerrasScreen({
               canManageCatalog={canManageCatalog}
               canDeleteCompletion={canDeleteCompletion}
               canViewCompletion={canViewCompletion}
+              participantNameMap={participantNameMap}
             />
           ))
         ) : (
@@ -4331,6 +4329,7 @@ function MountainRangeAccordion({
   canManageCatalog,
   canDeleteCompletion,
   canViewCompletion,
+  participantNameMap,
 }: MountainRangeAccordionProps & { 
   onTogglePeak: (rangeId: string, peakId: string, completionId?: string) => void,
   onDeleteCompletion: (rangeId: string, peakId: string, completionId: string) => void,
@@ -4341,6 +4340,7 @@ function MountainRangeAccordion({
   canManageCatalog: boolean,
   canDeleteCompletion: (completion: PeakCompletion) => boolean,
   canViewCompletion: (completion: PeakCompletion) => boolean,
+  participantNameMap: Map<string, string>,
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const percentage = range.totalPeaks > 0 ? (range.completedPeaks / range.totalPeaks) * 100 : 0;
@@ -4426,7 +4426,11 @@ function MountainRangeAccordion({
                           {label}
                         </p>
 
-                        {peaks.map((peak: Peak) => (
+                        {peaks.map((peak: Peak) => {
+                          const completionGroups = groupCompletionsByDate(peak.completions, participantNameMap);
+                          const completionGroupCount = completionGroups.length;
+
+                          return (
                           <div
                             key={peak.id}
                             className={`w-full flex flex-col p-3 rounded-xl border transition-all text-left ${
@@ -4441,7 +4445,7 @@ function MountainRangeAccordion({
                                 </span>
                                 <span className={`text-[10px] font-bold ${peak.completions.length > 0 ? style.doneTextClass : 'text-slate-500'}`}>
                                   {peak.completions.length > 0
-                                    ? `${peak.completions.length} ${localType === 'cachoeira' ? 'visita(s)' : 'conquista(s)'}`
+                                    ? `${completionGroupCount} ${localType === 'cachoeira' ? 'visita(s)' : 'presença(s)'}`
                                     : 'Pendente'}
                                 </span>
                               </div>
@@ -4484,27 +4488,37 @@ function MountainRangeAccordion({
 
                             {peak.completions.length > 0 && (
                               <div className={`mt-3 pt-3 border-t w-full space-y-3 ${style.completionBorderClass}`}>
-                                {peak.completions.map((comp: PeakCompletion) => (
+                                {completionGroups.map((group: CompletionGroup) => {
+                                  const visibleCompletion =
+                                    group.completions.find(completion => canViewCompletion(completion)) ??
+                                    group.completions[0];
+                                  const manageableCompletion =
+                                    group.completions.find(completion => canDeleteCompletion(completion)) ??
+                                    (canManageCatalog ? group.completions[0] : undefined);
+                                  const firstWikilocCompletion = group.completions.find(completion => completion.wikilocUrl);
+                                  const canOpenGroup = Boolean(visibleCompletion && canViewCompletion(visibleCompletion));
+
+                                  return (
                                   <div
-                                    key={comp.id}
+                                    key={`${peak.id}-${group.date}`}
                                     className={`relative rounded-lg bg-black/20 p-2 pr-8 group transition-colors ${
-                                      canViewCompletion(comp) ? 'cursor-pointer hover:bg-black/30' : 'cursor-default'
+                                      canOpenGroup ? 'cursor-pointer hover:bg-black/30' : 'cursor-default'
                                     }`}
                                     onClick={() => {
-                                      if (canViewCompletion(comp)) {
-                                        onTogglePeak(range.id, peak.id, comp.id);
+                                      if (visibleCompletion && canOpenGroup) {
+                                        onTogglePeak(range.id, peak.id, visibleCompletion.id);
                                       }
                                     }}
                                   >
-                                    {(canManageCatalog || canDeleteCompletion(comp)) && (
+                                    {manageableCompletion && (canManageCatalog || canDeleteCompletion(manageableCompletion)) && (
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           const message = peak.name
-                                            ? `Excluir a conquista de "${peak.name}" (${comp.date})?`
-                                            : `Excluir esta conquista (${comp.date})?`;
+                                            ? `Excluir seu check-in de "${peak.name}" (${group.date})?`
+                                            : `Excluir seu check-in (${group.date})?`;
                                           if (window.confirm(message)) {
-                                            onDeleteCompletion(range.id, peak.id, comp.id);
+                                            onDeleteCompletion(range.id, peak.id, manageableCompletion.id);
                                           }
                                         }}
                                         className="absolute right-2 top-2 z-10 flex size-5 items-center justify-center rounded-full bg-red-500 text-white opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100"
@@ -4513,10 +4527,10 @@ function MountainRangeAccordion({
                                       </button>
                                     )}
                                     <div className="flex justify-between items-start mb-1">
-                                      <span className={`text-[10px] font-bold ${style.completionDateClass}`}>{comp.date}</span>
-                                      {comp.wikilocUrl && (
+                                      <span className={`text-[10px] font-bold ${style.completionDateClass}`}>{group.date}</span>
+                                      {firstWikilocCompletion?.wikilocUrl && (
                                         <a
-                                          href={comp.wikilocUrl}
+                                          href={firstWikilocCompletion.wikilocUrl}
                                           target="_blank"
                                           rel="noopener noreferrer"
                                           onClick={(e) => e.stopPropagation()}
@@ -4526,9 +4540,9 @@ function MountainRangeAccordion({
                                         </a>
                                       )}
                                     </div>
-                                    {comp.participants && comp.participants.length > 0 && (
+                                    {group.participants.length > 0 && (
                                       <div className="flex flex-wrap gap-1">
-                                        {comp.participants.map((p: string) => (
+                                        {group.participants.map((p: string) => (
                                           <span
                                             key={p}
                                             className={`text-[8px] px-1.5 py-0.5 rounded-full border ${style.participantTagClass}`}
@@ -4539,11 +4553,13 @@ function MountainRangeAccordion({
                                       </div>
                                     )}
                                   </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             )}
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     );
                   })}
@@ -5225,7 +5241,7 @@ function PodiumItem({ leader, rank, height, mode, featured = false, isTied = fal
           </div>
         )}
         <div className={`size-20 rounded-full border-4 ${borderColor} overflow-hidden bg-white/5 shadow-lg ${shadowColor}`}>
-          <img src={leader.avatar} alt={leader.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+          <AvatarImage src={leader.avatar} alt={leader.name} className="w-full h-full object-cover" />
         </div>
         <div className={`absolute -bottom-2 -right-1 size-7 rounded-full flex items-center justify-center border-2 border-black text-[10px] font-bold ${rank === 1 ? 'bg-primary text-black' : 'bg-slate-800 text-white'}`}>
           {rank}
@@ -5283,7 +5299,7 @@ function LeaderRow({ leader, mode, isTied = false, onViewTrails }: LeaderRowProp
     <div className="bg-white/5 border border-primary/10 p-4 rounded-2xl flex items-center gap-4 hover:border-primary/30 transition-all group">
       <span className="text-slate-600 font-bold w-4 group-hover:text-primary transition-colors">{leader.rank}</span>
       <div className="size-12 rounded-full border-2 border-primary/20 overflow-hidden bg-black">
-        <img src={leader.avatar} alt={leader.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+        <AvatarImage src={leader.avatar} alt={leader.name} className="w-full h-full object-cover" />
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex flex-col items-start gap-1">
