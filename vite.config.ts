@@ -18,6 +18,9 @@ const readRequestBody = async (req: IncomingMessage) => {
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   const supabaseUrl = String(env.VITE_SUPABASE_URL ?? '').trim().replace(/\/+$/, '');
+  const base =
+    (env.VITE_BASE ? String(env.VITE_BASE).trim() : '') ||
+    (process.env.GITHUB_REPOSITORY ? `/${process.env.GITHUB_REPOSITORY.split('/')[1]}/` : '/');
   const supabaseRestBridge: Plugin = {
     name: 'supabase-rest-bridge',
     configureServer(server: ViteDevServer) {
@@ -94,6 +97,7 @@ export default defineConfig(({mode}) => {
 
   return {
     plugins: [react(), tailwindcss(), supabaseRestBridge],
+    base,
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
     },

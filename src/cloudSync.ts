@@ -222,6 +222,14 @@ const parseAuthResponseError = async (
       return 'Escolha uma senha mais forte para continuar.';
     }
 
+    if (
+      normalizedMessage.includes('idx_completions_individual_daily_checkin') ||
+      normalizedMessage.includes('duplicate key value violates unique constraint') ||
+      normalizedMessage.includes('23505')
+    ) {
+      return 'Voce ja tem um check-in neste local nessa data. Edite o check-in existente ou escolha outra data.';
+    }
+
     return message;
   };
 
@@ -234,7 +242,9 @@ const parseAuthResponseError = async (
 
     const messageCandidate = record.error_description ?? record.message ?? record.error ?? record.msg;
     if (typeof messageCandidate === 'string' && messageCandidate.trim()) {
-      return translateAuthErrorMessage(messageCandidate.trim());
+      const detailCandidate = typeof record.details === 'string' ? ` ${record.details}` : '';
+      const hintCandidate = typeof record.hint === 'string' ? ` ${record.hint}` : '';
+      return translateAuthErrorMessage(`${messageCandidate.trim()}${detailCandidate}${hintCandidate}`);
     }
 
     return fallbackMessage;

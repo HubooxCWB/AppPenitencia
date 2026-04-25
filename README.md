@@ -81,6 +81,15 @@ No painel Supabase:
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
 4. Deploy
 
+## Deploy no GitHub Pages (Actions)
+
+O repo inclui workflow em `.github/workflows/deploy-pages.yml` que:
+
+- faz build do Vite (`npm run build`)
+- publica o `dist/` no GitHub Pages ao dar push na branch `main`
+
+No GitHub, em `Settings > Pages`, selecione `Source: GitHub Actions` (uma vez).
+
 ## Persistencia e backup
 
 Chaves locais usadas:

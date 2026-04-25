@@ -501,7 +501,17 @@ interface LeaderTrailScore {
   localType: LocalType;
   altitude_metros: number | null;
 }
-type RankingMode = 'PICOS' | 'ALTITUDE' | 'SERRAS' | 'GERAL';
+
+interface LeaderCheckinDetail {
+  id: string;
+  name: string;
+  rangeName: string;
+  localType: LocalType;
+  date: string;
+  timestamp: number;
+}
+
+type RankingMode = 'PICOS' | 'ALTITUDE' | 'SERRAS' | 'CHECKINS' | 'GERAL';
 type RankingLeader = Leader & {
   highestAltitude: number | null;
   highestAltitudePeak: string | null;
@@ -510,6 +520,7 @@ type RankingLeader = Leader & {
   conqueredRangesCount: number;
   trilhasCount: number;
   cachoeirasCount: number;
+  checkinsCount: number;
   score: number;
 };
 
@@ -1787,6 +1798,20 @@ export default function App() {
 
     const currentUserDisplayName = resolveParticipantDisplayName(user.name, participantNameMap) || user.name;
     const participantsToPersist = [currentUserDisplayName];
+    const targetPeak = mountainRanges
+      .find(range => range.id === rangeId)
+      ?.peaks.find(peak => peak.id === peakId);
+    const duplicateSameDayCompletion = targetPeak?.completions.find(completion =>
+      completion.date === data.date &&
+      completion.id !== completionId &&
+      isCompletionOwnedByCurrentUser(completion)
+    );
+
+    if (duplicateSameDayCompletion) {
+      window.alert('Voce ja tem um check-in neste local nessa data. Edite o check-in existente ou escolha outra data.');
+      return;
+    }
+
     const existingSameDayCompletionId = completionId ?? mountainRanges
       .find(range => range.id === rangeId)
       ?.peaks.find(peak => peak.id === peakId)
@@ -3948,6 +3973,7 @@ function HomeScreen({
     .slice(0, 3);
 
   const allPeaks = scopedMountainRanges.flatMap(range => (Array.isArray(range.peaks) ? range.peaks : []));
+  const totalCheckins = allPeaks.reduce((acc, peak) => acc + peak.completions.length, 0);
   const statsByLocalType = LOCAL_TYPES.reduce((acc, localType) => {
     const localTypePeaks = allPeaks.filter(peak => resolvePeakLocalType(peak) === localType);
     acc[localType] = {
@@ -4086,8 +4112,20 @@ function HomeScreen({
             label="Ilhas"
             completed={statsByLocalType.ilha.completed}
             total={statsByLocalType.ilha.total}
-            className="sm:col-span-2"
           />
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-lg font-bold">Check-ins</h2>
+        <div className="bg-neutral-forest/40 rounded-2xl p-5 border border-white/10">
+          <p className="text-sm font-bold text-slate-200 flex items-center gap-2">
+            <CheckCircle2 size={18} className="text-primary" />
+            <span>Check-ins totais</span>
+          </p>
+          <p className="text-2xl font-black text-primary mt-2">
+            {totalCheckins} <span className="text-sm font-bold text-slate-400">atividades registradas</span>
+          </p>
         </div>
       </section>
 
@@ -4145,6 +4183,8 @@ function HikerStatisticCard({
   total: number;
   className?: string;
 }) {
+  const progressPercent = total > 0 ? Math.min(100, (completed / total) * 100) : 0;
+
   return (
     <div className={`min-w-0 overflow-hidden rounded-[1.75rem] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(34,197,94,0.12),transparent_50%),linear-gradient(180deg,rgba(4,20,8,0.96),rgba(2,12,5,0.92))] p-4 shadow-[0_18px_40px_rgba(0,0,0,0.22)] ${className}`}>
       <div className="mb-3 flex size-8 items-center justify-center rounded-lg border border-primary/15 bg-primary/5 text-primary" aria-hidden>
@@ -4158,7 +4198,7 @@ function HikerStatisticCard({
       <div className="mt-3 h-1.5 rounded-full bg-white/5 overflow-hidden">
         <div
           className="h-full rounded-full bg-gradient-to-r from-primary via-lime-300 to-emerald-200 transition-all"
-          style={{ width: `${total > 0 ? Math.min(100, (completed / total) * 100) : 0}%` }}
+          style={{ width: `${progressPercent}%` }}
         />
       </div>
     </div>
@@ -4623,13 +4663,16 @@ function RankingScreen({
   const picosTabRef = useRef<HTMLButtonElement | null>(null);
   const altitudeTabRef = useRef<HTMLButtonElement | null>(null);
   const serrasTabRef = useRef<HTMLButtonElement | null>(null);
+  const checkinsTabRef = useRef<HTMLButtonElement | null>(null);
   let leadersByPicos: RankingLeader[] = [];
   let leadersByAltitude: RankingLeader[] = [];
   let leadersBySerras: RankingLeader[] = [];
+  let leadersByCheckins: RankingLeader[] = [];
   let leadersByGeral: RankingLeader[] = [];
   let leaderTrailDetails = new Map<string, LeaderTrailScore[]>();
   let leaderAltitudeDetails = new Map<string, LeaderTrailScore[]>();
   let leaderConqueredRangeDetails = new Map<string, string[]>();
+  let leaderCheckinDetails = new Map<string, LeaderCheckinDetail[]>();
 
   try {
     const metaRangeTargets = new Map<string, { name: string; targetLocalIds: Set<string> }>();
@@ -4644,6 +4687,8 @@ function RankingScreen({
       completedMetaLocalsByRange: new Map<string, Set<string>>(),
       trilhas: new Set<string>(),
       cachoeiras: new Set<string>(),
+      checkinsCount: 0,
+      checkins: [] as LeaderCheckinDetail[],
       lastTrail: undefined as string | undefined,
       lastDate: 0,
     });
@@ -4661,6 +4706,8 @@ function RankingScreen({
         completedMetaLocalsByRange: Map<string, Set<string>>;
         trilhas: Set<string>;
         cachoeiras: Set<string>;
+        checkinsCount: number;
+        checkins: LeaderCheckinDetail[];
         lastTrail?: string;
         lastDate: number;
       }
@@ -4701,8 +4748,11 @@ function RankingScreen({
           : null;
         const completions = Array.isArray(peak?.completions) ? peak.completions : [];
 
-        completions.forEach(completion => {
+        completions.forEach((completion, completionIndex) => {
           const completionDate = parseBRDate((completion as PeakCompletion | undefined)?.date);
+          const completionLabel = typeof (completion as PeakCompletion | undefined)?.date === 'string'
+            ? (completion as PeakCompletion).date
+            : '';
           const participants = Array.isArray((completion as PeakCompletion | undefined)?.participants)
             ? (completion as PeakCompletion).participants
             : [];
@@ -4725,6 +4775,15 @@ function RankingScreen({
 
             const participantStats = leaderboardMap.get(participantKey) ?? createParticipantStats(participantName);
 
+            participantStats.checkinsCount += 1;
+            participantStats.checkins.push({
+              id: `${trailId}:${typeof (completion as PeakCompletion | undefined)?.id === 'string' ? (completion as PeakCompletion).id : completionIndex}`,
+              name: safePeakName,
+              rangeName: safeRangeName,
+              localType: safePeakLocalType,
+              date: completionLabel,
+              timestamp: completionDate,
+            });
             participantStats.exploredRanges.set(safeRangeId, safeRangeName);
             if (safePeakLocalType === 'pico' || safePeakLocalType === 'morro') {
               const completedMetaLocals = participantStats.completedMetaLocalsByRange.get(safeRangeId) ?? new Set<string>();
@@ -4809,6 +4868,8 @@ function RankingScreen({
         conqueredRanges: Map<string, string>;
         trilhas: Set<string>;
         cachoeiras: Set<string>;
+        checkinsCount: number;
+        checkins: LeaderCheckinDetail[];
         lastTrail?: string;
       },
       rank: number,
@@ -4825,6 +4886,7 @@ function RankingScreen({
       const conqueredRangesCount = stats.conqueredRanges.size;
       const trilhasCount = stats.trilhas.size;
       const cachoeirasCount = stats.cachoeiras.size;
+      const checkinsCount = stats.checkinsCount;
       const score = (picosCount * 10) + (conqueredRangesCount * 30) + (trilhasCount * 5) + (cachoeirasCount * 3);
 
       return {
@@ -4841,6 +4903,7 @@ function RankingScreen({
         conqueredRangesCount,
         trilhasCount,
         cachoeirasCount,
+        checkinsCount,
         score,
       };
     };
@@ -4889,6 +4952,22 @@ function RankingScreen({
         }
         if ((bStats.highestAltitude ?? 0) !== (aStats.highestAltitude ?? 0)) {
           return (bStats.highestAltitude ?? 0) - (aStats.highestAltitude ?? 0);
+        }
+        if (bStats.lastDate !== aStats.lastDate) {
+          return bStats.lastDate - aStats.lastDate;
+        }
+        return aStats.name.localeCompare(bStats.name, 'pt-BR');
+      })
+      .map(([participantKey, stats], index) => toRankingLeader(participantKey, stats, index + 1));
+    leadersByCheckins = participantEntries
+      .sort((a, b) => {
+        const aStats = a[1];
+        const bStats = b[1];
+        if (bStats.checkinsCount !== aStats.checkinsCount) {
+          return bStats.checkinsCount - aStats.checkinsCount;
+        }
+        if (bStats.trails.size !== aStats.trails.size) {
+          return bStats.trails.size - aStats.trails.size;
         }
         if (bStats.lastDate !== aStats.lastDate) {
           return bStats.lastDate - aStats.lastDate;
@@ -4948,15 +5027,34 @@ function RankingScreen({
         Array.from(stats.conqueredRanges.values()).sort((a, b) => a.localeCompare(b, 'pt-BR')),
       ]),
     );
+    leaderCheckinDetails = new Map(
+      Array.from(leaderboardMap.entries()).map(([participantKey, stats]) => [
+        participantKey,
+        [...stats.checkins].sort((a, b) => {
+          if (b.timestamp !== a.timestamp) {
+            return b.timestamp - a.timestamp;
+          }
+
+          const byRange = a.rangeName.localeCompare(b.rangeName, 'pt-BR');
+          if (byRange !== 0) {
+            return byRange;
+          }
+
+          return a.name.localeCompare(b.name, 'pt-BR');
+        }),
+      ]),
+    );
   } catch (error) {
     console.error('Erro ao montar ranking:', error);
     leadersByPicos = [];
     leadersByAltitude = [];
     leadersBySerras = [];
+    leadersByCheckins = [];
     leadersByGeral = [];
     leaderTrailDetails = new Map();
     leaderAltitudeDetails = new Map();
     leaderConqueredRangeDetails = new Map();
+    leaderCheckinDetails = new Map();
   }
 
   const leaders = rankingMode === 'PICOS'
@@ -4965,14 +5063,18 @@ function RankingScreen({
       ? leadersByAltitude
       : rankingMode === 'SERRAS'
         ? leadersBySerras
-        : leadersByGeral;
+        : rankingMode === 'CHECKINS'
+          ? leadersByCheckins
+          : leadersByGeral;
   const rankingTitle = rankingMode === 'PICOS'
     ? '🏆 Ranking de Picos'
     : rankingMode === 'ALTITUDE'
       ? '⛰ Ranking de Altitude'
       : rankingMode === 'SERRAS'
         ? '🧭 Regiões Conquistadas'
-        : '⭐ Ranking Geral';
+        : rankingMode === 'CHECKINS'
+          ? '✅ Ranking de Check-ins'
+          : '⭐ Ranking Geral';
 
   const top1 = leaders[0];
   const top2 = leaders[1];
@@ -4984,7 +5086,9 @@ function RankingScreen({
         ? leader.altitudeTotal
         : rankingMode === 'SERRAS'
           ? leader.conqueredRangesCount
-          : leader.score;
+          : rankingMode === 'CHECKINS'
+            ? leader.checkinsCount
+            : leader.score;
     acc.set(metricValue, (acc.get(metricValue) ?? 0) + 1);
     return acc;
   }, new Map<number, number>());
@@ -5004,7 +5108,9 @@ function RankingScreen({
         ? leader.altitudeTotal
         : rankingMode === 'SERRAS'
           ? leader.conqueredRangesCount
-          : leader.score;
+          : rankingMode === 'CHECKINS'
+            ? leader.checkinsCount
+            : leader.score;
     return tiedPeakCounts.has(metricValue);
   };
   const selectedLeader = leaders.find(leader => leader.id === selectedLeaderId) ?? null;
@@ -5016,12 +5122,16 @@ function RankingScreen({
   const selectedLeaderConqueredRanges = selectedLeader
     ? leaderConqueredRangeDetails.get(selectedLeader.id) ?? []
     : [];
+  const selectedLeaderCheckins = selectedLeader
+    ? leaderCheckinDetails.get(selectedLeader.id) ?? []
+    : [];
   const currentUserRankingKeys = Array.from(
     new Set([normalizeText(user.name), normalizeText(user.username)].filter(Boolean)),
   );
   const currentUserLeaderInMode = leaders.find(leader => currentUserRankingKeys.includes(leader.id)) ?? null;
   const currentUserLeaderOverall =
     leadersByGeral.find(leader => currentUserRankingKeys.includes(leader.id)) ??
+    leadersByCheckins.find(leader => currentUserRankingKeys.includes(leader.id)) ??
     leadersByPicos.find(leader => currentUserRankingKeys.includes(leader.id)) ??
     leadersBySerras.find(leader => currentUserRankingKeys.includes(leader.id)) ??
     leadersByAltitude.find(leader => currentUserRankingKeys.includes(leader.id)) ??
@@ -5032,6 +5142,7 @@ function RankingScreen({
   const userPicosConquistados = currentUserLeaderOverall?.peaks ?? 0;
   const userSerrasExploradas = currentUserLeaderOverall?.exploredRangesCount ?? 0;
   const userSerrasConquistadas = currentUserLeaderOverall?.conqueredRangesCount ?? 0;
+  const userCheckinsTotais = currentUserLeaderOverall?.checkinsCount ?? 0;
   const userMaiorAltitude = currentUserLeaderOverall?.highestAltitude ?? null;
 
   useEffect(() => {
@@ -5041,7 +5152,9 @@ function RankingScreen({
         ? picosTabRef.current
         : rankingMode === 'ALTITUDE'
           ? altitudeTabRef.current
-          : serrasTabRef.current;
+          : rankingMode === 'SERRAS'
+            ? serrasTabRef.current
+            : checkinsTabRef.current;
 
     activeTab?.scrollIntoView({
       behavior: 'smooth',
@@ -5117,6 +5230,18 @@ function RankingScreen({
           >
             📍 Serras Conquistadas
           </button>
+          <button
+            ref={checkinsTabRef}
+            type="button"
+            onClick={() => setRankingMode('CHECKINS')}
+            className={`h-9 px-3 rounded-xl text-[11px] font-bold uppercase tracking-wider border transition-colors whitespace-nowrap snap-start ${
+              rankingMode === 'CHECKINS'
+                ? 'bg-primary text-black border-primary'
+                : 'bg-primary/10 text-primary border-primary/30 hover:bg-primary/20'
+            }`}
+          >
+            ✅ Check-ins
+          </button>
         </div>
       </header>
 
@@ -5148,6 +5273,7 @@ function RankingScreen({
               >
                 <div className="pt-3 mt-3 border-t border-white/10 space-y-1.5">
                   <p className="text-sm text-slate-200">Picos conquistados: {userPicosConquistados}</p>
+                  <p className="text-sm text-slate-200">Check-ins totais: {userCheckinsTotais}</p>
                   <p className="text-sm text-slate-200">Regiões exploradas: {userSerrasExploradas}</p>
                   <p className="text-sm text-slate-200">Regiões conquistadas: {userSerrasConquistadas}</p>
                   <p className="text-sm text-slate-200">
@@ -5169,7 +5295,9 @@ function RankingScreen({
                     ? 'Sem ranking de altitude ainda. Registre conquistas em picos com altitude para gerar o ranking.'
                     : rankingMode === 'SERRAS'
                       ? 'Sem ranking de regiões conquistadas ainda. Complete todas as metas de uma região para pontuar aqui.'
-                      : 'Sem ranking geral ainda. Registre conquistas para calcular a pontuação combinada.'}
+                      : rankingMode === 'CHECKINS'
+                        ? 'Sem ranking de check-ins ainda. Registre atividades para competir por frequência.'
+                        : 'Sem ranking geral ainda. Registre conquistas para calcular a pontuação combinada.'}
               </p>
             </div>
           </section>
@@ -5203,6 +5331,7 @@ function RankingScreen({
             leader={selectedLeader}
             trails={selectedLeaderTrails}
             conqueredRanges={selectedLeaderConqueredRanges}
+            checkins={selectedLeaderCheckins}
             mode={rankingMode}
             onClose={() => setSelectedLeaderId(null)}
           />
@@ -5230,7 +5359,9 @@ function PodiumItem({ leader, rank, height, mode, featured = false, isTied = fal
       ? (leader.altitudeTotal > 0 ? `${leader.altitudeTotal} m` : 'Sem altitude')
       : mode === 'SERRAS'
         ? `${leader.conqueredRangesCount}`
-        : `${leader.score} pts`;
+        : mode === 'CHECKINS'
+          ? `${leader.checkinsCount} check-ins`
+          : `${leader.score} pts`;
 
   return (
     <div className={`flex min-w-0 flex-col items-center ${featured ? 'scale-110 sm:scale-[1.08]' : ''}`}>
@@ -5252,12 +5383,15 @@ function PodiumItem({ leader, rank, height, mode, featured = false, isTied = fal
       {mode === 'SERRAS' && (
         <p className="text-[9px] text-primary font-bold uppercase tracking-tighter">Regiões Conquistadas</p>
       )}
+      {mode === 'CHECKINS' && (
+        <p className="text-[9px] text-primary font-bold uppercase tracking-tighter">Atividades Registradas</p>
+      )}
       {mode === 'ALTITUDE' && leader.highestAltitudePeak && (
         <p className="text-[9px] text-slate-400 truncate w-full text-center">({leader.highestAltitudePeak})</p>
       )}
       {mode === 'GERAL' && (
         <p className="text-[9px] text-slate-400 truncate w-full text-center">
-          {leader.peaks}p • {leader.conqueredRangesCount}sc • {leader.trilhasCount}t • {leader.cachoeirasCount}ca
+          {leader.peaks}p • {leader.conqueredRangesCount}sc • {leader.trilhasCount}t • {leader.cachoeirasCount}ca • {leader.checkinsCount}ci
         </p>
       )}
       {isTied && (
@@ -5293,7 +5427,9 @@ function LeaderRow({ leader, mode, isTied = false, onViewTrails }: LeaderRowProp
       ? (leader.altitudeTotal > 0 ? `${leader.altitudeTotal} m` : 'Sem altitude')
       : mode === 'SERRAS'
         ? `${leader.conqueredRangesCount}`
-        : `${leader.score} pts`;
+        : mode === 'CHECKINS'
+          ? `${leader.checkinsCount}`
+          : `${leader.score} pts`;
 
   return (
     <div className="bg-white/5 border border-primary/10 p-4 rounded-2xl flex items-center gap-4 hover:border-primary/30 transition-all group">
@@ -5321,6 +5457,8 @@ function LeaderRow({ leader, mode, isTied = false, onViewTrails }: LeaderRowProp
           </p>
         ) : mode === 'SERRAS' ? (
           <p className="text-[9px] text-primary font-bold uppercase tracking-tighter">Regiões Conquistadas</p>
+        ) : mode === 'CHECKINS' ? (
+          <p className="text-[9px] text-primary font-bold uppercase tracking-tighter">Check-ins</p>
         ) : (
           <p className="text-[9px] text-primary font-bold uppercase tracking-tighter">Score</p>
         )}
@@ -5341,12 +5479,14 @@ function TrailScoreModal({
   leader,
   trails,
   conqueredRanges,
+  checkins,
   mode,
   onClose,
 }: {
   leader: RankingLeader;
   trails: LeaderTrailScore[];
   conqueredRanges: string[];
+  checkins: LeaderCheckinDetail[];
   mode: RankingMode;
   onClose: () => void;
 }) {
@@ -5383,11 +5523,15 @@ function TrailScoreModal({
                   ? 'Score Geral'
                   : mode === 'ALTITUDE'
                     ? 'Locais com Altitude'
-                    : 'Picos Conquistados'}
+                    : mode === 'CHECKINS'
+                      ? 'Check-ins Totais'
+                      : 'Picos Conquistados'}
             </p>
             <h2 className="text-lg font-bold leading-tight">{leader.name}</h2>
             {mode === 'GERAL' ? (
               <p className="text-xs text-primary mt-1">{leader.score} pts</p>
+            ) : mode === 'CHECKINS' ? (
+              <p className="text-xs text-primary mt-1">{leader.checkinsCount} atividade(s) registrada(s)</p>
             ) : mode === 'SERRAS' ? (
               <p className="text-xs text-slate-400 mt-1">{conqueredRanges.length} serra(s) conquistada(s)</p>
             ) : mode === 'ALTITUDE' ? (
@@ -5413,9 +5557,32 @@ function TrailScoreModal({
               <p className="text-xs text-slate-300">{leader.conqueredRangesCount} regiões conquistadas × 30 = {leader.conqueredRangesCount * 30}</p>
               <p className="text-xs text-slate-300">{leader.trilhasCount} trilhas × 5 = {leader.trilhasCount * 5}</p>
               <p className="text-xs text-slate-300">{leader.cachoeirasCount} cachoeiras × 3 = {leader.cachoeirasCount * 3}</p>
+              <p className="text-xs text-slate-400">Check-ins totais: {leader.checkinsCount} (nao alteram o score)</p>
               <p className="text-sm font-bold text-primary pt-1 border-t border-primary/20">Total: {leader.score} pts</p>
             </div>
           </div>
+        ) : mode === 'CHECKINS' ? (
+          checkins.length === 0 ? (
+            <div className="py-8 text-center bg-white/5 rounded-2xl border border-dashed border-white/10">
+              <p className="text-slate-400 text-sm italic">Sem check-ins para este trilheiro.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {checkins.map(checkin => (
+                <div key={checkin.id} className="rounded-xl border border-primary/15 bg-black/20 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-bold leading-tight">{checkin.name}</p>
+                    <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider px-2 py-1 rounded-full border border-primary/30 bg-primary/10 text-primary">
+                      {getLocalTypeLabel(checkin.localType)}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    {checkin.rangeName}{checkin.date ? ` • ${checkin.date}` : ''}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )
         ) : mode === 'SERRAS' ? (
           conqueredRanges.length === 0 ? (
             <div className="py-8 text-center bg-white/5 rounded-2xl border border-dashed border-white/10">
