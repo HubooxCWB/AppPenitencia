@@ -1268,6 +1268,12 @@ export default function App() {
   const [cloudSyncErrorStatus, setCloudSyncErrorStatus] = useState<number | null>(null);
   const [registeredUsers, setRegisteredUsers] = useState<CloudParticipantUser[]>(() => readStoredParticipantDirectory());
   const [isLoadingRegisteredUsers, setIsLoadingRegisteredUsers] = useState(false);
+  const [isSavingCompletion, setIsSavingCompletion] = useState(false);
+  const [completionSyncStatus, setCompletionSyncStatus] = useState<{
+    state: 'idle' | 'saving' | 'success' | 'error';
+    message: string;
+  }>({ state: 'idle', message: '' });
+  const completionSyncStatusTimeoutRef = useRef<number | null>(null);
   const hadCachedUserOnLoad = useRef(Boolean(user));
   const hasInitializedMountainRangesPersistence = useRef(false);
   const hasAttemptedCloudHydration = useRef(false);
@@ -1298,6 +1304,30 @@ export default function App() {
 
     window.localStorage.removeItem(AUTH_STORAGE_KEY);
   }, [user]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !isSavingCompletion) {
+      return;
+    }
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isSavingCompletion]);
+
+  useEffect(() => () => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    if (completionSyncStatusTimeoutRef.current !== null) {
+      window.clearTimeout(completionSyncStatusTimeoutRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     if (!cloudSyncEnabled) {
@@ -1624,6 +1654,21 @@ export default function App() {
     setCurrentScreen('HOME');
   };
 
+  const scheduleCompletionSyncStatusReset = (delayMs = 4000) => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    if (completionSyncStatusTimeoutRef.current !== null) {
+      window.clearTimeout(completionSyncStatusTimeoutRef.current);
+    }
+
+    completionSyncStatusTimeoutRef.current = window.setTimeout(() => {
+      setCompletionSyncStatus({ state: 'idle', message: '' });
+      completionSyncStatusTimeoutRef.current = null;
+    }, delayMs);
+  };
+
   const handleProfileUpdate = async (updates: { username: string; avatar: string }) => {
     if (!user) {
       return { ok: false, message: 'Usuário não encontrado.' };
@@ -1796,15 +1841,22 @@ export default function App() {
       return;
     }
 
+    if (cloudSyncEnabled && isSavingCompletion) {
+      return;
+    }
+
     const currentUserDisplayName = resolveParticipantDisplayName(user.name, participantNameMap) || user.name;
     const participantsToPersist = [currentUserDisplayName];
     const targetPeak = mountainRanges
       .find(range => range.id === rangeId)
       ?.peaks.find(peak => peak.id === peakId);
+    const isCloudOwnedByCurrentUser = (completion: PeakCompletion) =>
+      Boolean(user?.id && completion.ownerUserId && completion.ownerUserId === user.id);
+
     const duplicateSameDayCompletion = targetPeak?.completions.find(completion =>
       completion.date === data.date &&
       completion.id !== completionId &&
-      isCompletionOwnedByCurrentUser(completion)
+      (cloudSyncEnabled ? isCloudOwnedByCurrentUser(completion) : isCompletionOwnedByCurrentUser(completion))
     );
 
     if (duplicateSameDayCompletion) {
@@ -1812,77 +1864,103 @@ export default function App() {
       return;
     }
 
-    const existingSameDayCompletionId = completionId ?? mountainRanges
+    const selectedCompletion = completionId
+      ? targetPeak?.completions.find(completion => completion.id === completionId)
+      : null;
+    const editableCompletionId = cloudSyncEnabled
+      ? (selectedCompletion && isCloudOwnedByCurrentUser(selectedCompletion) ? selectedCompletion.id : undefined)
+      : completionId;
+
+    const existingSameDayCompletionId = editableCompletionId ?? mountainRanges
       .find(range => range.id === rangeId)
       ?.peaks.find(peak => peak.id === peakId)
       ?.completions.find(completion =>
         completion.date === data.date &&
-        isCompletionOwnedByCurrentUser(completion)
+        (cloudSyncEnabled ? isCloudOwnedByCurrentUser(completion) : isCompletionOwnedByCurrentUser(completion))
       )?.id;
 
     if (cloudSyncEnabled) {
       void (async () => {
-        const savedCompletion = await upsertCloudCompletion({
-          peakId,
-          completionId: existingSameDayCompletionId,
-          date: data.date,
-          participants: participantsToPersist,
-          wikilocUrl: data.wikilocUrl,
+        setIsSavingCompletion(true);
+        setCompletionSyncStatus({
+          state: 'saving',
+          message: 'Sincronizando check-in na nuvem... não feche a página.',
         });
-
-        if (!savedCompletion.ok) {
-          const message = 'message' in savedCompletion ? savedCompletion.message : 'Não foi possível salvar a conquista.';
-          window.alert(message);
-          return;
-        }
-
-        const completion = savedCompletion.completion;
-
-        setMountainRanges(prev => withRangeStats(prev.map(range => {
-          if (range.id !== rangeId) return range;
-
-          const newPeaks = range.peaks.map(peak => {
-            if (peak.id !== peakId) return peak;
-
-            if (existingSameDayCompletionId) {
-              return {
-                ...peak,
-                completions: peak.completions.map(c =>
-                  c.id === existingSameDayCompletionId
-                    ? {
-                        ...c,
-                        id: completion.id,
-                        date: completion.date,
-                        participants: completion.participants,
-                        wikilocUrl: completion.wikilocUrl,
-                        ownerUserId: completion.ownerUserId ?? user.id,
-                      }
-                    : c
-                ),
-              };
-            }
-
-            return {
-              ...peak,
-              completions: [
-                ...peak.completions,
-                {
-                  id: completion.id,
-                  date: completion.date,
-                  participants: completion.participants,
-                  ownerUserId: completion.ownerUserId ?? user.id,
-                  wikilocUrl: completion.wikilocUrl,
-                },
-              ],
-            };
+        try {
+          const savedCompletion = await upsertCloudCompletion({
+            peakId,
+            completionId: existingSameDayCompletionId,
+            date: data.date,
+            participants: participantsToPersist,
+            wikilocUrl: data.wikilocUrl,
           });
 
-          return {
-            ...range,
-            peaks: newPeaks
-          };
-        })));
-        setIsCompletingPeak(null);
+          if (!savedCompletion.ok) {
+            const message = 'message' in savedCompletion ? savedCompletion.message : 'Não foi possível salvar a conquista.';
+            setCompletionSyncStatus({
+              state: 'error',
+              message,
+            });
+            scheduleCompletionSyncStatusReset(6000);
+            window.alert(message);
+            return;
+          }
+
+          const completion = savedCompletion.completion;
+
+          setMountainRanges(prev => withRangeStats(prev.map(range => {
+            if (range.id !== rangeId) return range;
+
+            const newPeaks = range.peaks.map(peak => {
+              if (peak.id !== peakId) return peak;
+
+              if (existingSameDayCompletionId) {
+                return {
+                  ...peak,
+                  completions: peak.completions.map(c =>
+                    c.id === existingSameDayCompletionId
+                      ? {
+                          ...c,
+                          id: completion.id,
+                          date: completion.date,
+                          participants: completion.participants,
+                          wikilocUrl: completion.wikilocUrl,
+                          ownerUserId: completion.ownerUserId ?? user.id,
+                        }
+                      : c
+                  ),
+                };
+              }
+
+              return {
+                ...peak,
+                completions: [
+                  ...peak.completions,
+                  {
+                    id: completion.id,
+                    date: completion.date,
+                    participants: completion.participants,
+                    ownerUserId: completion.ownerUserId ?? user.id,
+                    wikilocUrl: completion.wikilocUrl,
+                  },
+                ],
+              };
+            });
+
+            return {
+              ...range,
+              peaks: newPeaks
+            };
+          })));
+          setIsCompletingPeak(null);
+          setCompletionSyncStatus({
+            state: 'success',
+            message: 'Check-in sincronizado com sucesso.',
+          });
+          scheduleCompletionSyncStatusReset(3200);
+        } finally {
+          setIsSavingCompletion(false);
+        }
       })();
       return;
     }
@@ -2220,6 +2298,7 @@ export default function App() {
   )
     .filter(name => participantNameMap.has(normalizeText(name)))
     .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  const pendingCompletionSyncCount = isSavingCompletion ? 1 : 0;
 
   if (isAuthBootstrapping) {
     return (
@@ -2389,10 +2468,11 @@ export default function App() {
           />
         )}
         {isCompletingPeak && (
-          <CompletionModal 
+          <CompletionModal
             peak={isCompletingPeak.peak}
             initialData={isCompletingPeak.initialData}
             isReadOnly={isCompletingPeak.isReadOnly}
+            isSaving={isSavingCompletion}
             participantSuggestions={participantSuggestions}
             participantNameMap={participantNameMap}
             isLoadingParticipantSuggestions={isLoadingRegisteredUsers}
@@ -2403,6 +2483,32 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+
+      {cloudSyncEnabled && completionSyncStatus.state !== 'idle' && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-[calc(5.9rem+env(safe-area-inset-bottom))] z-40 px-3 sm:px-6">
+          <div
+            className={`mx-auto flex w-full max-w-5xl items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-xs font-bold shadow-xl backdrop-blur-xl ${
+              completionSyncStatus.state === 'error'
+                ? 'border-red-400/30 bg-red-500/15 text-red-100'
+                : completionSyncStatus.state === 'success'
+                  ? 'border-emerald-400/30 bg-emerald-500/15 text-emerald-100'
+                  : 'border-sky-400/30 bg-sky-500/15 text-sky-100'
+            }`}
+          >
+            <span className="inline-flex items-center gap-2">
+              {completionSyncStatus.state === 'saving' && <RefreshCw size={14} className="animate-spin" />}
+              {completionSyncStatus.state === 'success' && <CheckCircle2 size={14} />}
+              {completionSyncStatus.state === 'error' && <AlertTriangle size={14} />}
+              {completionSyncStatus.message}
+            </span>
+            {completionSyncStatus.state === 'saving' && (
+              <span className="rounded-full border border-current/40 px-2 py-0.5 text-[10px] uppercase tracking-wider">
+                Pendente: {pendingCompletionSyncCount}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Floating Action Button */}
       {currentScreen === 'SERRAS' && isAdminUser && (
@@ -2561,6 +2667,7 @@ function CompletionModal({
   peak,
   initialData,
   isReadOnly = false,
+  isSaving = false,
   participantSuggestions,
   participantNameMap,
   isLoadingParticipantSuggestions,
@@ -2572,6 +2679,7 @@ function CompletionModal({
   peak: Peak, 
   initialData?: { date: string, participants: string[], wikilocUrl?: string },
   isReadOnly?: boolean,
+  isSaving?: boolean,
   participantSuggestions: string[],
   participantNameMap: Map<string, string>,
   isLoadingParticipantSuggestions: boolean,
@@ -2590,25 +2698,21 @@ function CompletionModal({
     return `${day}/${month}/${year}`;
   };
 
-  const [date, setDate] = useState(initialData ? parseBRDateToISO(initialData.date) : new Date().toISOString().split('T')[0]);
-  const dateInputRef = useRef<HTMLInputElement | null>(null);
+  const getTodayLocalISODate = () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const [date, setDate] = useState(initialData ? parseBRDateToISO(initialData.date) : getTodayLocalISODate());
   const currentUserDisplayName = resolveParticipantDisplayName(currentUser.name, participantNameMap) || currentUser.name;
   const participants = isReadOnly
     ? sanitizeParticipants(initialData?.participants ?? [], participantNameMap)
     : [currentUserDisplayName];
+  const formDisabled = isReadOnly || isSaving;
   const [wikilocUrl, setWikilocUrl] = useState(initialData?.wikilocUrl || '');
-
-  const openDatePicker = () => {
-    const input = dateInputRef.current;
-    if (!input || isReadOnly) {
-      return;
-    }
-
-    input.focus();
-    if (typeof input.showPicker === 'function') {
-      input.showPicker();
-    }
-  };
 
   useEffect(() => {
     const previousBodyOverflow = document.body.style.overflow;
@@ -2640,7 +2744,7 @@ function CompletionModal({
           <h2 className="text-xl font-bold">
             {isReadOnly ? 'Detalhes de' : initialData ? 'Editar' : 'Concluir'} {peak.name}
           </h2>
-          <button onClick={onClose} className="text-slate-500 hover:text-white">
+          <button onClick={onClose} disabled={isSaving} className="text-slate-500 hover:text-white disabled:opacity-40">
             <X size={24} />
           </button>
         </div>
@@ -2653,24 +2757,12 @@ function CompletionModal({
             </label>
             <div className="relative">
               <input
-                ref={dateInputRef}
                 type="date"
                 value={date}
-                onClick={openDatePicker}
                 onChange={(e) => setDate(e.target.value)}
-                disabled={isReadOnly}
-                className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 pl-4 pr-12 text-base sm:text-sm focus:outline-none focus:border-primary transition-all text-white"
+                disabled={formDisabled}
+                className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-base sm:text-sm focus:outline-none focus:border-primary transition-all text-white"
               />
-              <button
-                type="button"
-                onClick={openDatePicker}
-                disabled={isReadOnly}
-                className="absolute right-2 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-xl bg-primary/10 text-primary disabled:opacity-50"
-                aria-label="Abrir calendário"
-                title="Abrir calendário"
-              >
-                <Calendar size={16} />
-              </button>
             </div>
           </div>
 
@@ -2698,7 +2790,7 @@ function CompletionModal({
               placeholder="https://pt.wikiloc.com/..."
               value={wikilocUrl}
               onChange={(e) => setWikilocUrl(e.target.value)}
-              disabled={isReadOnly}
+              disabled={formDisabled}
               className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-12 px-4 text-base sm:text-sm focus:outline-none focus:border-primary transition-all"
             />
             {isReadOnly && wikilocUrl && (
@@ -2717,20 +2809,22 @@ function CompletionModal({
         <div className="flex gap-3 pt-2">
           <button 
             onClick={onClose}
+            disabled={isSaving}
             className="flex-1 h-12 rounded-2xl border border-white/10 text-slate-400 font-bold text-base sm:text-sm"
           >
-            {isReadOnly ? 'Fechar' : 'Cancelar'}
+            {isReadOnly ? 'Fechar' : isSaving ? 'Salvando...' : 'Cancelar'}
           </button>
           {!isReadOnly && (
             <button 
+              disabled={isSaving}
               onClick={() => onSave({
                 date: formatISOToBRDate(date),
                 participants,
                 wikilocUrl,
               })}
-              className="flex-1 h-12 rounded-2xl bg-primary text-background-dark font-bold text-base sm:text-sm"
+              className="flex-1 h-12 rounded-2xl bg-primary text-background-dark font-bold text-base sm:text-sm disabled:opacity-60"
             >
-              {initialData ? 'Salvar' : 'Confirmar'}
+              {isSaving ? 'Salvando...' : initialData ? 'Salvar' : 'Confirmar'}
             </button>
           )}
         </div>

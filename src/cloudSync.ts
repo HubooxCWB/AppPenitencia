@@ -1,4 +1,4 @@
-import { MountainRange } from './types';
+﻿import { MountainRange } from './types';
 
 const RAW_SUPABASE_URL = String(import.meta.env.VITE_SUPABASE_URL ?? '').trim();
 const SUPABASE_PUBLIC_KEY = String(
@@ -188,11 +188,11 @@ const parseAuthResponseError = async (
       normalizedMessage.includes('email not confirmed') ||
       normalizedMessage.includes('invalid email or password')
     ) {
-      return 'E-mail ou senha inválidos.';
+      return 'E-mail ou senha invÃ¡lidos.';
     }
 
     if (normalizedMessage.includes('user already registered')) {
-      return 'Já existe uma conta cadastrada com este e-mail.';
+      return 'JÃ¡ existe uma conta cadastrada com este e-mail.';
     }
 
     if (
@@ -203,7 +203,7 @@ const parseAuthResponseError = async (
     }
 
     if (normalizedMessage.includes('signup is disabled')) {
-      return 'O cadastro está desativado no momento.';
+      return 'O cadastro estÃ¡ desativado no momento.';
     }
 
     if (
@@ -211,7 +211,7 @@ const parseAuthResponseError = async (
       normalizedMessage.includes('rate limit') ||
       normalizedMessage.includes('too many requests')
     ) {
-      return 'Muitas tentativas em sequência. Aguarde um pouco e tente novamente.';
+      return 'Muitas tentativas em sequÃªncia. Aguarde um pouco e tente novamente.';
     }
 
     if (normalizedMessage.includes('same password')) {
@@ -220,6 +220,10 @@ const parseAuthResponseError = async (
 
     if (normalizedMessage.includes('weak password')) {
       return 'Escolha uma senha mais forte para continuar.';
+    }
+
+    if (normalizedMessage.includes('forbidden') || normalizedMessage.includes('permission denied')) {
+      return 'Sua sessÃ£o expirou ou vocÃª nÃ£o tem permissÃ£o para este check-in. Entre novamente e tente de novo.';
     }
 
     if (
@@ -292,6 +296,8 @@ const parseSnapshotRanges = (payload: unknown): MountainRange[] | null => {
 };
 
 const looksLikeJwt = (value: string) => /^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$/.test(value);
+const wait = (ms: number) => new Promise<void>(resolve => window.setTimeout(resolve, ms));
+const shouldRetryStatus = (status: number) => status === 408 || status === 425 || status === 429 || status >= 500;
 
 const buildRequestHeaders = async () => {
   const headers: Record<string, string> = {
@@ -563,7 +569,7 @@ export const signInWithSupabaseAuth = async (params: {
   password: string;
 }): Promise<{ ok: true; profile: CloudAuthProfile } | { ok: false; message: string }> => {
   if (!hasCloudConfig) {
-    return { ok: false, message: 'Supabase não está configurado.' };
+    return { ok: false, message: 'Supabase nÃ£o estÃ¡ configurado.' };
   }
 
   try {
@@ -579,14 +585,14 @@ export const signInWithSupabaseAuth = async (params: {
     if (!response.ok) {
       return {
         ok: false,
-        message: await parseAuthResponseError(response, 'Não foi possível entrar com este e-mail e senha.'),
+        message: await parseAuthResponseError(response, 'NÃ£o foi possÃ­vel entrar com este e-mail e senha.'),
       };
     }
 
     const payload = (await response.json()) as unknown;
     const record = asRecord(payload);
     if (!record) {
-      return { ok: false, message: 'Resposta inválida do Supabase Auth.' };
+      return { ok: false, message: 'Resposta invÃ¡lida do Supabase Auth.' };
     }
 
     const session: SupabaseAuthSession = {
@@ -598,18 +604,18 @@ export const signInWithSupabaseAuth = async (params: {
     };
 
     if (!session.access_token || !session.user) {
-      return { ok: false, message: 'Sessão inválida retornada pelo Supabase Auth.' };
+      return { ok: false, message: 'SessÃ£o invÃ¡lida retornada pelo Supabase Auth.' };
     }
 
     const profile = buildAuthProfile(session.user);
     if (!profile) {
-      return { ok: false, message: 'Perfil do usuário inválido.' };
+      return { ok: false, message: 'Perfil do usuÃ¡rio invÃ¡lido.' };
     }
 
     persistAuthSession(session);
     return { ok: true, profile };
   } catch {
-    return { ok: false, message: 'Falha de conexão com o Supabase Auth.' };
+    return { ok: false, message: 'Falha de conexÃ£o com o Supabase Auth.' };
   }
 };
 
@@ -619,7 +625,7 @@ export const signUpWithSupabaseAuth = async (params: {
   displayName?: string;
 }): Promise<{ ok: true; profile: CloudAuthProfile } | { ok: false; message: string }> => {
   if (!hasCloudConfig) {
-    return { ok: false, message: 'Supabase não está configurado.' };
+    return { ok: false, message: 'Supabase nÃ£o estÃ¡ configurado.' };
   }
 
   try {
@@ -638,14 +644,14 @@ export const signUpWithSupabaseAuth = async (params: {
     if (!response.ok) {
       return {
         ok: false,
-        message: await parseAuthResponseError(response, 'Não foi possível criar sua conta.'),
+        message: await parseAuthResponseError(response, 'NÃ£o foi possÃ­vel criar sua conta.'),
       };
     }
 
     const payload = (await response.json()) as unknown;
     const record = asRecord(payload);
     if (!record) {
-      return { ok: false, message: 'Resposta inválida do Supabase Auth.' };
+      return { ok: false, message: 'Resposta invÃ¡lida do Supabase Auth.' };
     }
 
     const sessionRecord = asRecord(record.session);
@@ -677,25 +683,25 @@ export const signUpWithSupabaseAuth = async (params: {
       ) {
         return {
           ok: false,
-          message: 'Conta criada. Seu projeto ainda exige confirmação de e-mail. Em Supabase Auth, desative "Confirmar e-mail" e clique em "Salvar alterações".',
+          message: 'Conta criada. Seu projeto ainda exige confirmaÃ§Ã£o de e-mail. Em Supabase Auth, desative "Confirmar e-mail" e clique em "Salvar alteraÃ§Ãµes".',
         };
       }
 
       return {
         ok: false,
-        message: 'Conta criada, mas não foi possível entrar automaticamente. Tente entrar manualmente com o mesmo e-mail e senha.',
+        message: 'Conta criada, mas nÃ£o foi possÃ­vel entrar automaticamente. Tente entrar manualmente com o mesmo e-mail e senha.',
       };
     }
 
     const profile = buildAuthProfile(session.user);
     if (!profile) {
-      return { ok: false, message: 'Perfil do usuário inválido.' };
+      return { ok: false, message: 'Perfil do usuÃ¡rio invÃ¡lido.' };
     }
 
     persistAuthSession(session);
     return { ok: true, profile };
   } catch {
-    return { ok: false, message: 'Falha de conexão com o Supabase Auth.' };
+    return { ok: false, message: 'Falha de conexÃ£o com o Supabase Auth.' };
   }
 };
 
@@ -730,16 +736,17 @@ export const updateSupabaseAuthPassword = async (
   newPassword: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   if (!hasCloudConfig) {
-    return { ok: false, message: 'Supabase não está configurado.' };
+    return { ok: false, message: 'Supabase nÃ£o estÃ¡ configurado.' };
   }
 
   const session = await getValidStoredAuthSession();
   const accessToken = session?.access_token;
   if (!accessToken) {
-    return { ok: false, message: 'Sessão inválida. Faça login novamente.' };
+    return { ok: false, message: 'SessÃ£o invÃ¡lida. FaÃ§a login novamente.' };
   }
 
   try {
+
     const requestInit: RequestInit = {
       method: 'PUT',
       headers: {
@@ -761,13 +768,13 @@ export const updateSupabaseAuthPassword = async (
     if (!response.ok) {
       return {
         ok: false,
-        message: await parseAuthResponseError(response, 'Não foi possível atualizar a senha.'),
+        message: await parseAuthResponseError(response, 'NÃ£o foi possÃ­vel atualizar a senha.'),
       };
     }
 
     return { ok: true };
   } catch {
-    return { ok: false, message: 'Falha de conexão ao atualizar a senha. Se persistir, saia e entre novamente antes de tentar de novo.' };
+    return { ok: false, message: 'Falha de conexÃ£o ao atualizar a senha. Se persistir, saia e entre novamente antes de tentar de novo.' };
   }
 };
 
@@ -777,13 +784,13 @@ export const updateSupabaseAuthProfile = async (params: {
   avatarUrl?: string;
 }): Promise<{ ok: true; profile: CloudAuthProfile } | { ok: false; message: string }> => {
   if (!hasCloudConfig) {
-    return { ok: false, message: 'Supabase não está configurado.' };
+    return { ok: false, message: 'Supabase nÃ£o estÃ¡ configurado.' };
   }
 
   const session = await getValidStoredAuthSession();
   const accessToken = session?.access_token;
   if (!accessToken) {
-    return { ok: false, message: 'Sessão inválida. Faça login novamente.' };
+    return { ok: false, message: 'SessÃ£o invÃ¡lida. FaÃ§a login novamente.' };
   }
 
   try {
@@ -803,7 +810,7 @@ export const updateSupabaseAuthProfile = async (params: {
     if (!response.ok) {
       return {
         ok: false,
-        message: await parseAuthResponseError(response, 'Não foi possível atualizar o perfil.'),
+        message: await parseAuthResponseError(response, 'NÃ£o foi possÃ­vel atualizar o perfil.'),
       };
     }
 
@@ -811,7 +818,7 @@ export const updateSupabaseAuthProfile = async (params: {
     const updatedUser = toSupabaseAuthUser(payload);
     const profile = buildAuthProfile(updatedUser);
     if (!updatedUser || !profile) {
-      return { ok: false, message: 'Perfil do usuário inválido.' };
+      return { ok: false, message: 'Perfil do usuÃ¡rio invÃ¡lido.' };
     }
 
     persistAuthSession({
@@ -825,7 +832,7 @@ export const updateSupabaseAuthProfile = async (params: {
 
     return { ok: true, profile };
   } catch {
-    return { ok: false, message: 'Falha de conexão ao atualizar o perfil.' };
+    return { ok: false, message: 'Falha de conexÃ£o ao atualizar o perfil.' };
   }
 };
 
@@ -973,10 +980,15 @@ export const upsertCloudCompletion = async (payload: {
     }
 > => {
   if (!hasCloudConfig) {
-    return { ok: false, message: 'Supabase não está configurado.' };
+    return { ok: false, message: 'Supabase nÃ£o estÃ¡ configurado.' };
   }
 
   try {
+    const validSession = await getValidStoredAuthSession();
+    if (!validSession?.access_token) {
+      return { ok: false, message: 'Sua sessÃ£o expirou. Entre novamente para salvar check-ins na nuvem.' };
+    }
+
     const requestInit: RequestInit = {
       method: 'POST',
       headers: await buildRequestHeaders(),
@@ -989,23 +1001,45 @@ export const upsertCloudCompletion = async (payload: {
       }),
     };
 
-    let response: Response;
-    try {
-      response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/upsert_completion`, requestInit);
-    } catch {
-      response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_completion`, requestInit);
+    const maxAttempts = 3;
+    let response: Response | null = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        try {
+          response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/upsert_completion`, requestInit);
+        } catch {
+          response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_completion`, requestInit);
+        }
+      } catch {
+        if (attempt >= maxAttempts) {
+          return { ok: false, message: 'Falha de conexÃƒÂ£o ao salvar a conquista.' };
+        }
+
+        await wait(attempt * 400);
+        continue;
+      }
+
+      if (response.ok || !shouldRetryStatus(response.status) || attempt >= maxAttempts) {
+        break;
+      }
+
+      await wait(attempt * 400);
+    }
+
+    if (!response) {
+      return { ok: false, message: 'Falha de conexÃƒÂ£o ao salvar a conquista.' };
     }
 
     if (!response.ok) {
       return {
         ok: false,
-        message: await parseAuthResponseError(response, 'Não foi possível salvar a conquista.'),
+        message: await parseAuthResponseError(response, 'NÃ£o foi possÃ­vel salvar a conquista.'),
       };
     }
 
     const record = asRecord(await response.json());
     if (!record || typeof record.id !== 'string' || typeof record.date !== 'string') {
-      return { ok: false, message: 'Resposta inválida ao salvar a conquista.' };
+      return { ok: false, message: 'Resposta invÃ¡lida ao salvar a conquista.' };
     }
 
     return {
@@ -1021,7 +1055,7 @@ export const upsertCloudCompletion = async (payload: {
       },
     };
   } catch {
-    return { ok: false, message: 'Falha de conexão ao salvar a conquista.' };
+    return { ok: false, message: 'Falha de conexÃ£o ao salvar a conquista.' };
   }
 };
 
