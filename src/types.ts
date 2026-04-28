@@ -21,6 +21,7 @@ export type Screen =
   | 'LOGIN'
   | 'HOME'
   | 'SERRAS'
+  | 'TIMELINE'
   | 'DIARIO'
   | 'METAS'
   | 'RANKING'

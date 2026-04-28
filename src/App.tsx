@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Home as HomeIcon, 
@@ -2388,6 +2388,15 @@ export default function App() {
             onBack={() => setCurrentScreen('HOME')}
           />
         );
+      case 'TIMELINE':
+        return (
+          <TimelineScreen
+            user={user}
+            mountainRanges={mountainRanges}
+            participantNameMap={participantNameMap}
+            onBack={() => setCurrentScreen('HOME')}
+          />
+        );
       case 'PERFIL':
         return (
           <PerfilScreen
@@ -2535,6 +2544,12 @@ export default function App() {
               onClick={() => setCurrentScreen('SERRAS')} 
               icon={<Mountain size={24} />} 
               label="REGIÕES" 
+            />
+            <NavButton 
+              active={currentScreen === 'TIMELINE'} 
+              onClick={() => setCurrentScreen('TIMELINE')} 
+              icon={<BookOpen size={24} />} 
+              label="TIMELINE" 
             />
             <NavButton 
               active={currentScreen === 'RANKING'} 
@@ -4454,7 +4469,7 @@ function FilterTab({ label, active = false, onClick }: { label: string, active?:
     <button
       onClick={onClick}
       type="button"
-      className={`px-6 h-9 rounded-full text-sm font-bold transition-all ${active ? 'bg-primary text-background-dark shadow-lg shadow-primary/20' : 'bg-primary/5 text-primary border border-primary/20'}`}
+      className={`h-9 whitespace-nowrap rounded-full px-4 text-xs font-bold transition-all sm:px-6 sm:text-sm ${active ? 'bg-primary text-background-dark shadow-lg shadow-primary/20' : 'bg-primary/5 text-primary border border-primary/20'}`}
     >
       {label}
     </button>
@@ -4731,6 +4746,348 @@ function MountainRangeAccordion({
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+interface TimelineEvent {
+  id: string;
+  peakId: string;
+  peakName: string;
+  rangeName: string;
+  localType: LocalType;
+  dateLabel: string;
+  timestamp: number;
+  participants: string[];
+  wikilocUrl?: string;
+}
+
+function TimelineScreen({
+  user,
+  mountainRanges,
+  participantNameMap,
+  onBack,
+}: {
+  user: User;
+  mountainRanges: MountainRange[];
+  participantNameMap: Map<string, string>;
+  onBack: () => void;
+}) {
+  const [localTypeFilter, setLocalTypeFilter] = useState<'all' | LocalType>('all');
+  const [periodFilter, setPeriodFilter] = useState<'THIS_MONTH' | 'THIS_YEAR' | 'ALL'>('ALL');
+
+  const parseTimelineDate = (dateValue: unknown) => {
+    if (typeof dateValue !== 'string') {
+      return null;
+    }
+
+    const trimmedDate = dateValue.trim();
+    if (!trimmedDate) {
+      return null;
+    }
+
+    const brMatch = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(trimmedDate);
+    if (brMatch) {
+      const parsedDate = new Date(Number(brMatch[3]), Number(brMatch[2]) - 1, Number(brMatch[1]), 12, 0, 0, 0);
+      return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+    }
+
+    const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmedDate);
+    if (isoMatch) {
+      const parsedDate = new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]), 12, 0, 0, 0);
+      return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+    }
+
+    const parsedDate = new Date(trimmedDate);
+    return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+  };
+
+  const scopedRanges = useMemo(
+    () => (user.role === 'ADMIN'
+      ? mountainRanges
+      : scopeMountainRangesForUser(mountainRanges, user, participantNameMap)),
+    [mountainRanges, participantNameMap, user],
+  );
+
+  const allEvents = useMemo(() => {
+    const collectedEvents: TimelineEvent[] = [];
+
+    scopedRanges.forEach(range => {
+      range.peaks.forEach(peak => {
+        const localType = resolvePeakLocalType(peak);
+        peak.completions.forEach((completion, completionIndex) => {
+          const parsedDate = parseTimelineDate(completion.date);
+          const timestamp = parsedDate?.getTime() ?? 0;
+          collectedEvents.push({
+            id: `${peak.id}:${completion.id || completionIndex}`,
+            peakId: peak.id,
+            peakName: peak.name,
+            rangeName: range.name,
+            localType,
+            dateLabel: completion.date || 'Sem data',
+            timestamp,
+            participants: (Array.isArray(completion.participants) ? completion.participants : [])
+              .map(name => resolveParticipantDisplayName(name, participantNameMap)),
+            wikilocUrl: completion.wikilocUrl,
+          });
+        });
+      });
+    });
+
+    return collectedEvents.sort((a, b) => {
+      if (b.timestamp !== a.timestamp) {
+        return b.timestamp - a.timestamp;
+      }
+      return a.peakName.localeCompare(b.peakName, 'pt-BR');
+    });
+  }, [participantNameMap, scopedRanges]);
+
+  const filteredEvents = useMemo(() => {
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+
+    return allEvents.filter(event => {
+      if (localTypeFilter !== 'all' && event.localType !== localTypeFilter) {
+        return false;
+      }
+
+      if (periodFilter === 'ALL') {
+        return true;
+      }
+
+      const eventDate = new Date(event.timestamp);
+      if (Number.isNaN(eventDate.getTime())) {
+        return false;
+      }
+
+      if (periodFilter === 'THIS_YEAR') {
+        return eventDate.getFullYear() === currentYear;
+      }
+
+      return eventDate.getFullYear() === currentYear && eventDate.getMonth() === currentMonth;
+    });
+  }, [allEvents, localTypeFilter, periodFilter]);
+
+  const groupedEvents = useMemo(() => {
+    const timelineGroups = new Map<string, { label: string; items: TimelineEvent[]; order: number }>();
+
+    filteredEvents.forEach(event => {
+      const eventDate = new Date(event.timestamp);
+      const key = Number.isNaN(eventDate.getTime())
+        ? 'sem-data'
+        : `${eventDate.getFullYear()}-${String(eventDate.getMonth() + 1).padStart(2, '0')}`;
+      const label = Number.isNaN(eventDate.getTime())
+        ? 'Sem data'
+        : eventDate.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })
+            .replace(/^\w/, letter => letter.toUpperCase());
+      const order = Number.isNaN(eventDate.getTime())
+        ? -1
+        : eventDate.getFullYear() * 100 + eventDate.getMonth();
+
+      const existing = timelineGroups.get(key);
+      if (existing) {
+        existing.items.push(event);
+        return;
+      }
+
+      timelineGroups.set(key, { label, items: [event], order });
+    });
+
+    return Array.from(timelineGroups.values())
+      .sort((a, b) => b.order - a.order)
+      .map(group => ({
+        label: group.label,
+        items: group.items.sort((a, b) => b.timestamp - a.timestamp),
+      }));
+  }, [filteredEvents]);
+
+  const totalCheckins = allEvents.length;
+  const eventsWithValidDate = allEvents.filter(event => event.timestamp > 0);
+  const firstEvent = eventsWithValidDate.length > 0 ? eventsWithValidDate[eventsWithValidDate.length - 1] : null;
+  const latestEvent = eventsWithValidDate.length > 0 ? eventsWithValidDate[0] : null;
+
+  const firstRecordLabel = firstEvent
+    ? new Date(firstEvent.timestamp).toLocaleDateString('pt-BR', { month: 'short', year: 'numeric' })
+        .replace('.', '')
+        .replace(/^\w/, letter => letter.toUpperCase())
+    : '--';
+
+  const latestActivityLabel = (() => {
+    if (!latestEvent) {
+      return '--';
+    }
+
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const latestDate = new Date(latestEvent.timestamp);
+    const latestDay = new Date(
+      latestDate.getFullYear(),
+      latestDate.getMonth(),
+      latestDate.getDate(),
+    ).getTime();
+    const daysDiff = Math.round((today - latestDay) / 86_400_000);
+
+    if (daysDiff <= 0) {
+      return 'Hoje';
+    }
+
+    if (daysDiff === 1) {
+      return 'Ontem';
+    }
+
+    return latestEvent.dateLabel;
+  })();
+
+  const streakWeeks = useMemo(() => {
+    if (eventsWithValidDate.length === 0) {
+      return 0;
+    }
+
+    const getWeekKey = (date: Date) => {
+      const normalizedDate = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+      const dayNumber = normalizedDate.getUTCDay() || 7;
+      normalizedDate.setUTCDate(normalizedDate.getUTCDate() + 4 - dayNumber);
+      const yearStart = new Date(Date.UTC(normalizedDate.getUTCFullYear(), 0, 1));
+      const weekNo = Math.ceil((((normalizedDate.getTime() - yearStart.getTime()) / 86_400_000) + 1) / 7);
+      return `${normalizedDate.getUTCFullYear()}-${String(weekNo).padStart(2, '0')}`;
+    };
+
+    const eventWeeks = new Set(
+      eventsWithValidDate
+        .map(event => new Date(event.timestamp))
+        .filter(date => !Number.isNaN(date.getTime()))
+        .map(getWeekKey),
+    );
+
+    const latestDate = new Date(eventsWithValidDate[0].timestamp);
+    if (Number.isNaN(latestDate.getTime())) {
+      return 0;
+    }
+
+    let current = new Date(latestDate);
+    let streak = 0;
+
+    while (eventWeeks.has(getWeekKey(current))) {
+      streak += 1;
+      current = new Date(current.getTime() - 7 * 86_400_000);
+    }
+
+    return streak;
+  }, [eventsWithValidDate]);
+
+  return (
+    <div className="flex min-h-screen flex-col overflow-x-hidden pb-4">
+      <header className="sticky top-0 z-20 border-b border-primary/20 bg-background-dark/95 p-4 backdrop-blur-md">
+        <div className="flex items-center justify-between">
+          <button onClick={onBack} type="button" className="size-10 flex items-center justify-center rounded-full hover:bg-primary/10 transition-colors">
+            <ChevronRight className="rotate-180" />
+          </button>
+          <h1 className="text-lg font-bold tracking-tight">Linha do Tempo</h1>
+          <div className="w-10" />
+        </div>
+        <p className="mt-1 text-sm text-slate-400">Sua jornada do início até hoje.</p>
+      </header>
+
+      <div className="space-y-4 p-4">
+        <section className="rounded-2xl border border-primary/20 bg-gradient-to-r from-white/5 via-white/[0.03] to-primary/10 p-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Total check-ins</p>
+              <p className="text-2xl font-black text-slate-100">{totalCheckins}</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Primeiro registro</p>
+              <p className="text-xl font-black text-slate-100">{firstRecordLabel}</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Última ativ.</p>
+              <p className="text-xl font-black text-primary">{latestActivityLabel}</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Streak atual</p>
+              <p className="text-xl font-black text-slate-100">{streakWeeks} <span className="text-xs font-bold text-slate-400">semanas</span></p>
+            </div>
+          </div>
+        </section>
+
+        <section className="space-y-3 rounded-2xl border border-white/10 bg-white/[0.02] p-3">
+          <div className="space-y-2">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+              Filtro por tipo
+            </p>
+            <div className="flex gap-2 overflow-x-auto no-scrollbar">
+              <FilterTab label="Todos" active={localTypeFilter === 'all'} onClick={() => setLocalTypeFilter('all')} />
+              <FilterTab label="Picos" active={localTypeFilter === 'pico'} onClick={() => setLocalTypeFilter('pico')} />
+              <FilterTab label="Morros" active={localTypeFilter === 'morro'} onClick={() => setLocalTypeFilter('morro')} />
+              <FilterTab label="Trilhas" active={localTypeFilter === 'trilha'} onClick={() => setLocalTypeFilter('trilha')} />
+              <FilterTab label="Cachoeiras" active={localTypeFilter === 'cachoeira'} onClick={() => setLocalTypeFilter('cachoeira')} />
+              <FilterTab label="Ilhas" active={localTypeFilter === 'ilha'} onClick={() => setLocalTypeFilter('ilha')} />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+              Filtro por período
+            </p>
+            <div className="flex gap-2 overflow-x-auto no-scrollbar">
+              <FilterTab label="Este mês" active={periodFilter === 'THIS_MONTH'} onClick={() => setPeriodFilter('THIS_MONTH')} />
+              <FilterTab label="Este ano" active={periodFilter === 'THIS_YEAR'} onClick={() => setPeriodFilter('THIS_YEAR')} />
+              <FilterTab label="Tudo" active={periodFilter === 'ALL'} onClick={() => setPeriodFilter('ALL')} />
+            </div>
+          </div>
+        </section>
+
+        {groupedEvents.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-white/15 bg-white/5 py-10 text-center">
+            <p className="text-sm italic text-slate-400">Sem registros no período.</p>
+          </div>
+        ) : (
+          <section className="space-y-6 pb-24">
+            {groupedEvents.map(group => (
+              <div key={group.label} className="space-y-3">
+                <h2 className="text-xl font-bold text-slate-200">{group.label}</h2>
+                <div className="relative pl-6">
+                  <div className="absolute bottom-0 left-[11px] top-0 border-l border-white/10" />
+                  <div className="space-y-3">
+                    {group.items.map(event => {
+                      const style = LOCAL_TYPE_STYLES[event.localType];
+                      return (
+                        <div key={event.id} className="relative">
+                          <span className="absolute left-[-18px] top-5 size-2.5 rounded-full border border-primary/30 bg-primary shadow-[0_0_10px_rgba(34,197,94,0.6)]" />
+                          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+                            <div className="mb-2 flex items-center justify-between gap-2">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{event.dateLabel}</span>
+                              <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest ${style.cardCompletedClass} ${style.doneTextClass}`}>
+                                {getLocalTypeLabel(event.localType)}
+                              </span>
+                            </div>
+                            <p className="text-lg font-bold leading-tight text-slate-100">{event.peakName}</p>
+                            <p className="mt-1 text-xs text-slate-400">📍 {event.rangeName}</p>
+                            {event.participants.length > 0 && (
+                              <p className="mt-2 truncate text-xs text-slate-400">👥 {event.participants.join(', ')}</p>
+                            )}
+                            {event.wikilocUrl && (
+                              <a
+                                href={event.wikilocUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={`mt-3 inline-flex items-center gap-1 text-[11px] font-bold ${style.completionLinkClass} hover:underline`}
+                              >
+                                <MapIcon size={12} /> Wikiloc
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </section>
+        )}
+      </div>
     </div>
   );
 }
