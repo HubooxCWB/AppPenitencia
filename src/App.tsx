@@ -4332,6 +4332,7 @@ function SerrasScreen({
 }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'DONE' | 'TODO'>('ALL');
+  const [expandedRangeId, setExpandedRangeId] = useState<string | null>(null);
 
   const normalizedSearchTerm = normalizeText(searchTerm);
   const scopedMountainRanges = scopeMountainRangesForUser(mountainRanges, user, participantNameMap);
@@ -4366,6 +4367,17 @@ function SerrasScreen({
       };
     })
     .filter((range): range is MountainRange => range !== null);
+
+  useEffect(() => {
+    if (!expandedRangeId) {
+      return;
+    }
+
+    const stillVisible = filteredRanges.some(range => range.id === expandedRangeId);
+    if (!stillVisible) {
+      setExpandedRangeId(null);
+    }
+  }, [expandedRangeId, filteredRanges]);
 
   return (
     <div className="flex min-h-screen flex-col overflow-x-hidden">
@@ -4413,6 +4425,8 @@ function SerrasScreen({
             <MountainRangeAccordion 
               key={range.id} 
               range={range} 
+              isOpen={expandedRangeId === range.id}
+              onToggle={() => setExpandedRangeId(current => (current === range.id ? null : range.id))}
               onTogglePeak={onTogglePeak} 
               onDeleteCompletion={onDeleteCompletion}
               onAddPeak={() => onAddPeak(range.id)}
@@ -4449,11 +4463,14 @@ function FilterTab({ label, active = false, onClick }: { label: string, active?:
 
 interface MountainRangeAccordionProps {
   range: MountainRange;
-  key?: React.Key;
+  isOpen: boolean;
+  onToggle: () => void;
 }
 
 function MountainRangeAccordion({ 
   range, 
+  isOpen,
+  onToggle,
   onTogglePeak,
   onDeleteCompletion,
   onAddPeak,
@@ -4476,7 +4493,6 @@ function MountainRangeAccordion({
   canViewCompletion: (completion: PeakCompletion) => boolean,
   participantNameMap: Map<string, string>,
 }) {
-  const [isOpen, setIsOpen] = useState(false);
   const percentage = range.totalPeaks > 0 ? (range.completedPeaks / range.totalPeaks) * 100 : 0;
   const peaksByType: Record<LocalType, Peak[]> = {
     pico: [],
@@ -4500,7 +4516,7 @@ function MountainRangeAccordion({
       <div className="w-full p-4 space-y-3">
         <div className="flex items-center justify-between">
           <button 
-            onClick={() => setIsOpen(!isOpen)}
+            onClick={onToggle}
             className="flex items-center gap-2 font-bold text-left flex-1"
           >
             <Mountain size={18} className="text-primary" />
