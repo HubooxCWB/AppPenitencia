@@ -512,6 +512,7 @@ interface LeaderCheckinDetail {
 }
 
 type RankingMode = 'PICOS' | 'ALTITUDE' | 'SERRAS' | 'CHECKINS' | 'GERAL';
+type RankingPeriod = 'MONTH' | 'ALL_TIME';
 type RankingLeader = Leader & {
   highestAltitude: number | null;
   highestAltitudePeak: string | null;
@@ -5124,6 +5125,7 @@ function RankingScreen({
   };
 
   const [rankingMode, setRankingMode] = useState<RankingMode>('GERAL');
+  const [rankingPeriod, setRankingPeriod] = useState<RankingPeriod>('MONTH');
   const [selectedLeaderId, setSelectedLeaderId] = useState<string | null>(null);
   const [isUserRankingSummaryExpanded, setIsUserRankingSummaryExpanded] = useState(false);
   const geralTabRef = useRef<HTMLButtonElement | null>(null);
@@ -5140,6 +5142,25 @@ function RankingScreen({
   let leaderAltitudeDetails = new Map<string, LeaderTrailScore[]>();
   let leaderConqueredRangeDetails = new Map<string, string[]>();
   let leaderCheckinDetails = new Map<string, LeaderCheckinDetail[]>();
+  const now = new Date();
+  const currentMonth = now.getMonth();
+  const currentYear = now.getFullYear();
+  const isCompletionInSelectedPeriod = (dateValue: unknown) => {
+    if (rankingPeriod === 'ALL_TIME') {
+      return true;
+    }
+
+    if (typeof dateValue !== 'string') {
+      return false;
+    }
+
+    const [day, month, year] = dateValue.split('/').map(Number);
+    if (!day || !month || !year) {
+      return false;
+    }
+
+    return month - 1 === currentMonth && year === currentYear;
+  };
 
   try {
     const metaRangeTargets = new Map<string, { name: string; targetLocalIds: Set<string> }>();
@@ -5216,6 +5237,10 @@ function RankingScreen({
         const completions = Array.isArray(peak?.completions) ? peak.completions : [];
 
         completions.forEach((completion, completionIndex) => {
+          if (!isCompletionInSelectedPeriod((completion as PeakCompletion | undefined)?.date)) {
+            return;
+          }
+
           const completionDate = parseBRDate((completion as PeakCompletion | undefined)?.date);
           const completionLabel = typeof (completion as PeakCompletion | undefined)?.date === 'string'
             ? (completion as PeakCompletion).date
@@ -5534,14 +5559,15 @@ function RankingScreen({
           ? leadersByCheckins
           : leadersByGeral;
   const rankingTitle = rankingMode === 'PICOS'
-    ? '🏆 Ranking de Picos'
+    ? '🏆 Trilha de Picos'
     : rankingMode === 'ALTITUDE'
-      ? '⛰ Ranking de Altitude'
+      ? '⛰ Trilha de Altitude'
       : rankingMode === 'SERRAS'
         ? '🧭 Regiões Conquistadas'
         : rankingMode === 'CHECKINS'
-          ? '✅ Ranking de Check-ins'
-          : '⭐ Ranking Geral';
+          ? '✅ Trilha de Check-ins'
+          : '⭐ Liga da Montanha';
+  const rankingPeriodLabel = rankingPeriod === 'MONTH' ? 'Mês atual' : 'Todo tempo';
 
   const top1 = leaders[0];
   const top2 = leaders[1];
@@ -5647,6 +5673,33 @@ function RankingScreen({
           >
             <Settings size={20} />
           </button>
+        </div>
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Visão: {rankingPeriodLabel}</p>
+          <div className="flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 p-1">
+            <button
+              type="button"
+              onClick={() => setRankingPeriod('MONTH')}
+              className={`h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-colors ${
+                rankingPeriod === 'MONTH'
+                  ? 'bg-primary text-black border-primary'
+                  : 'bg-transparent text-primary border-transparent hover:bg-primary/15'
+              }`}
+            >
+              Mês
+            </button>
+            <button
+              type="button"
+              onClick={() => setRankingPeriod('ALL_TIME')}
+              className={`h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-colors ${
+                rankingPeriod === 'ALL_TIME'
+                  ? 'bg-primary text-black border-primary'
+                  : 'bg-transparent text-primary border-transparent hover:bg-primary/15'
+              }`}
+            >
+              Todo tempo
+            </button>
+          </div>
         </div>
         <div className="mt-4 flex items-center gap-2 overflow-x-auto no-scrollbar pb-1 pr-4 scroll-smooth snap-x snap-mandatory">
           <button
@@ -5757,14 +5810,14 @@ function RankingScreen({
             <div className="py-10 text-center bg-white/5 rounded-2xl border border-dashed border-white/10">
               <p className="text-slate-400 text-sm italic">
                 {rankingMode === 'PICOS'
-                  ? 'Sem ranking ainda. Cadastre participantes em picos para gerar pontuação.'
+                  ? 'Sem ranking ainda neste periodo. Cadastre participantes em picos para gerar pontuação.'
                   : rankingMode === 'ALTITUDE'
-                    ? 'Sem ranking de altitude ainda. Registre conquistas em picos com altitude para gerar o ranking.'
+                    ? 'Sem ranking de altitude neste periodo. Registre conquistas em picos com altitude para gerar o ranking.'
                     : rankingMode === 'SERRAS'
-                      ? 'Sem ranking de regiões conquistadas ainda. Complete todas as metas de uma região para pontuar aqui.'
+                      ? 'Sem ranking de regiões conquistadas neste periodo. Complete todas as metas de uma região para pontuar aqui.'
                       : rankingMode === 'CHECKINS'
-                        ? 'Sem ranking de check-ins ainda. Registre atividades para competir por frequência.'
-                        : 'Sem ranking geral ainda. Registre conquistas para calcular a pontuação combinada.'}
+                        ? 'Sem ranking de check-ins neste periodo. Registre atividades para competir por frequência.'
+                        : 'Sem ranking geral neste periodo. Registre conquistas para calcular a pontuação combinada.'}
               </p>
             </div>
           </section>
