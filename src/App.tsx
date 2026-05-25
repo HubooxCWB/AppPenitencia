@@ -5590,12 +5590,8 @@ function RankingScreen({
       .filter(([, count]) => count > 1)
       .map(([value]) => value),
   );
-  const isTiedLeader = (leader?: RankingLeader) => {
-    if (!leader) {
-      return false;
-    }
-
-    const metricValue = rankingMode === 'PICOS'
+  const getLeaderMetricValue = (leader: RankingLeader) =>
+    rankingMode === 'PICOS'
       ? leader.peaks
       : rankingMode === 'ALTITUDE'
         ? leader.altitudeTotal
@@ -5604,8 +5600,34 @@ function RankingScreen({
           : rankingMode === 'CHECKINS'
             ? leader.checkinsCount
             : leader.score;
-    return tiedPeakCounts.has(metricValue);
+
+  const isTiedLeader = (leader?: RankingLeader) => {
+    if (!leader) {
+      return false;
+    }
+
+    return tiedPeakCounts.has(getLeaderMetricValue(leader));
   };
+
+  const podiumLeaders = [top2, top1, top3].filter((leader): leader is RankingLeader => Boolean(leader));
+  const podiumMetricTiers = Array.from(
+    new Set(podiumLeaders.map(getLeaderMetricValue)),
+  ).sort((a, b) => b - a);
+  const podiumHeights = ['h-28', 'h-20', 'h-16'] as const;
+  const getPodiumHeight = (leader: RankingLeader) => {
+    const tierIndex = podiumMetricTiers.indexOf(getLeaderMetricValue(leader));
+    return podiumHeights[Math.max(0, tierIndex)] ?? 'h-16';
+  };
+  const getPodiumDisplayRank = (leader: RankingLeader) => {
+    const tierIndex = podiumMetricTiers.indexOf(getLeaderMetricValue(leader));
+    return tierIndex >= 0 ? tierIndex + 1 : 1;
+  };
+  const isPodiumTiedGroup = (leader: RankingLeader) => {
+    const metric = getLeaderMetricValue(leader);
+    return podiumLeaders.filter(item => getLeaderMetricValue(item) === metric).length > 1;
+  };
+  const getPodiumFeatured = (leader: RankingLeader) =>
+    getPodiumDisplayRank(leader) === 1 && !isPodiumTiedGroup(leader);
   const selectedLeader = leaders.find(leader => leader.id === selectedLeaderId) ?? null;
   const selectedLeaderTrails = selectedLeader
     ? rankingMode === 'ALTITUDE'
@@ -5824,9 +5846,45 @@ function RankingScreen({
         ) : (
           <>
             <section className="pt-16 grid grid-cols-3 items-end gap-3">
-              {top2 ? <PodiumItem leader={top2} rank={2} height="h-20" mode={rankingMode} isTied={isTiedLeader(top2)} onViewTrails={() => setSelectedLeaderId(top2.id)} /> : <div className="min-h-[14rem]" />}
-              {top1 ? <PodiumItem leader={top1} rank={1} height="h-28" mode={rankingMode} featured isTied={isTiedLeader(top1)} onViewTrails={() => setSelectedLeaderId(top1.id)} /> : <div className="min-h-[16rem]" />}
-              {top3 ? <PodiumItem leader={top3} rank={3} height="h-16" mode={rankingMode} isTied={isTiedLeader(top3)} onViewTrails={() => setSelectedLeaderId(top3.id)} /> : <div className="min-h-[13rem]" />}
+              {top2 ? (
+                <PodiumItem
+                  leader={top2}
+                  rank={getPodiumDisplayRank(top2)}
+                  height={getPodiumHeight(top2)}
+                  mode={rankingMode}
+                  featured={getPodiumFeatured(top2)}
+                  isTied={isTiedLeader(top2)}
+                  onViewTrails={() => setSelectedLeaderId(top2.id)}
+                />
+              ) : (
+                <div className="min-h-[14rem]" />
+              )}
+              {top1 ? (
+                <PodiumItem
+                  leader={top1}
+                  rank={getPodiumDisplayRank(top1)}
+                  height={getPodiumHeight(top1)}
+                  mode={rankingMode}
+                  featured={getPodiumFeatured(top1)}
+                  isTied={isTiedLeader(top1)}
+                  onViewTrails={() => setSelectedLeaderId(top1.id)}
+                />
+              ) : (
+                <div className="min-h-[16rem]" />
+              )}
+              {top3 ? (
+                <PodiumItem
+                  leader={top3}
+                  rank={getPodiumDisplayRank(top3)}
+                  height={getPodiumHeight(top3)}
+                  mode={rankingMode}
+                  featured={getPodiumFeatured(top3)}
+                  isTied={isTiedLeader(top3)}
+                  onViewTrails={() => setSelectedLeaderId(top3.id)}
+                />
+              ) : (
+                <div className="min-h-[13rem]" />
+              )}
             </section>
 
             <section className="space-y-3">
