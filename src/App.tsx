@@ -5219,12 +5219,12 @@ function RankingScreen({
 
       peaks.forEach(peak => {
         const safePeakLocalType = resolvePeakLocalType(peak);
-        const isPico = safePeakLocalType === 'pico';
+        const countsForPeakScore = safePeakLocalType === 'pico' || safePeakLocalType === 'morro';
         const safePeakId = typeof peak?.id === 'string' ? peak.id : 'peak';
         const safePeakName = typeof peak?.name === 'string' ? peak.name : 'Trilha';
         const safePeakAltitude = resolvePeakAltitude(peak);
         const trailId = `${safeRangeId}:${safePeakId}`;
-        const trail: LeaderTrailScore | null = isPico
+        const trail: LeaderTrailScore | null = countsForPeakScore
           ? {
               id: trailId,
               name: safePeakName,
@@ -5911,7 +5911,7 @@ function PodiumItem({ leader, rank, height, mode, featured = false, isTied = fal
       )}
       {mode === 'GERAL' && (
         <p className="text-[9px] text-slate-400 truncate w-full text-center">
-          {leader.peaks}p • {leader.conqueredRangesCount}sc • {leader.trilhasCount}t • {leader.cachoeirasCount}ca • {leader.checkinsCount}ci
+          {leader.peaks}p/m • {leader.conqueredRangesCount}sc • {leader.trilhasCount}t • {leader.cachoeirasCount}ca • {leader.checkinsCount}ci
         </p>
       )}
       {isTied && (
@@ -6073,7 +6073,7 @@ function TrailScoreModal({
           <div className="space-y-3">
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-1.5">
               <p className="text-[10px] font-bold uppercase tracking-wider text-primary">Fórmula do Score</p>
-              <p className="text-xs text-slate-300">{leader.peaks} picos × 10 = {leader.peaks * 10}</p>
+              <p className="text-xs text-slate-300">{leader.peaks} picos e morros × 10 = {leader.peaks * 10}</p>
               <p className="text-xs text-slate-300">{leader.conqueredRangesCount} regiões conquistadas × 30 = {leader.conqueredRangesCount * 30}</p>
               <p className="text-xs text-slate-300">{leader.trilhasCount} trilhas × 5 = {leader.trilhasCount * 5}</p>
               <p className="text-xs text-slate-300">{leader.cachoeirasCount} cachoeiras × 3 = {leader.cachoeirasCount * 3}</p>
