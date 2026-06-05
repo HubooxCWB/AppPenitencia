@@ -98,6 +98,53 @@ const persistAuthSession = (session: SupabaseAuthSession) => {
   window.localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session));
 };
 
+const clearAuthTokensFromUrl = () => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const searchParams = new URLSearchParams(window.location.search);
+  ['access_token', 'refresh_token', 'expires_at', 'expires_in', 'token_type', 'type'].forEach(param => {
+    searchParams.delete(param);
+  });
+
+  const nextSearch = searchParams.toString();
+  const cleanUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}`;
+  window.history.replaceState(null, document.title, cleanUrl);
+};
+
+const parseAuthSessionRecord = (record: Record<string, unknown> | null): SupabaseAuthSession | null => {
+  if (!record) {
+    return null;
+  }
+
+  const accessToken = typeof record.access_token === 'string' ? record.access_token : undefined;
+  if (!accessToken) {
+    return null;
+  }
+
+  const expiresIn = typeof record.expires_in === 'number'
+    ? record.expires_in
+    : typeof record.expires_in === 'string'
+      ? Number(record.expires_in)
+      : undefined;
+  const expiresAt = typeof record.expires_at === 'number'
+    ? record.expires_at
+    : typeof record.expires_at === 'string'
+      ? Number(record.expires_at)
+      : undefined;
+
+  return {
+    access_token: accessToken,
+    refresh_token: typeof record.refresh_token === 'string' ? record.refresh_token : undefined,
+    expires_at: Number.isFinite(expiresAt) ? expiresAt : (
+      Number.isFinite(expiresIn) ? Math.floor(Date.now() / 1000) + Number(expiresIn) : undefined
+    ),
+    expires_in: Number.isFinite(expiresIn) ? Number(expiresIn) : undefined,
+    user: toSupabaseAuthUser(record.user),
+  };
+};
+
 const clearStoredAuthSession = () => {
   if (typeof window === 'undefined') {
     return;
@@ -564,6 +611,86 @@ export const restoreSupabaseAuthProfile = async (): Promise<CloudAuthProfile | n
   }
 };
 
+export const restoreSupabasePasswordRecoveryProfileFromUrl = async (): Promise<CloudAuthProfile | null> => {
+  if (!hasCloudConfig || typeof window === 'undefined') {
+    return null;
+  }
+
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const searchParams = new URLSearchParams(window.location.search);
+  const type = hashParams.get('type') ?? searchParams.get('type');
+  if (type !== 'recovery') {
+    return null;
+  }
+
+  const session = parseAuthSessionRecord({
+    access_token: hashParams.get('access_token') ?? searchParams.get('access_token') ?? undefined,
+    refresh_token: hashParams.get('refresh_token') ?? searchParams.get('refresh_token') ?? undefined,
+    expires_at: hashParams.get('expires_at') ?? searchParams.get('expires_at') ?? undefined,
+    expires_in: hashParams.get('expires_in') ?? searchParams.get('expires_in') ?? undefined,
+  });
+
+  clearAuthTokensFromUrl();
+
+  if (!session?.access_token) {
+    return null;
+  }
+
+  try {
+    const authUser = await fetchAuthUser(session.access_token);
+    if (!authUser) {
+      clearStoredAuthSession();
+      return null;
+    }
+
+    const profile = buildAuthProfile(authUser);
+    if (!profile) {
+      clearStoredAuthSession();
+      return null;
+    }
+
+    persistAuthSession({
+      ...session,
+      user: authUser,
+    });
+
+    return profile;
+  } catch {
+    clearStoredAuthSession();
+    return null;
+  }
+};
+
+export const requestSupabasePasswordReset = async (
+  email: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  if (!hasCloudConfig) {
+    return { ok: false, message: 'Supabase nÃ£o estÃ¡ configurado.' };
+  }
+
+  try {
+    const response = await fetchWithTimeout(`${SUPABASE_URL}/auth/v1/recover`, {
+      method: 'POST',
+      headers: buildAuthApiHeaders(),
+      body: JSON.stringify({
+        email,
+        redirect_to: typeof window === 'undefined' ? undefined : window.location.origin,
+      }),
+    });
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        message: await parseAuthResponseError(response, 'NÃ£o foi possÃ­vel enviar o e-mail de redefiniÃ§Ã£o.'),
+      };
+    }
+
+    return { ok: true };
+  } catch {
+    return { ok: false, message: 'Falha de conexÃ£o ao solicitar redefiniÃ§Ã£o de senha.' };
+  }
+};
+
 export const signInWithSupabaseAuth = async (params: {
   email: string;
   password: string;
@@ -595,13 +722,7 @@ export const signInWithSupabaseAuth = async (params: {
       return { ok: false, message: 'Resposta invÃ¡lida do Supabase Auth.' };
     }
 
-    const session: SupabaseAuthSession = {
-      access_token: typeof record.access_token === 'string' ? record.access_token : undefined,
-      refresh_token: typeof record.refresh_token === 'string' ? record.refresh_token : undefined,
-      expires_at: typeof record.expires_at === 'number' ? record.expires_at : undefined,
-      expires_in: typeof record.expires_in === 'number' ? record.expires_in : undefined,
-      user: toSupabaseAuthUser(record.user),
-    };
+    const session = parseAuthSessionRecord(record);
 
     if (!session.access_token || !session.user) {
       return { ok: false, message: 'SessÃ£o invÃ¡lida retornada pelo Supabase Auth.' };

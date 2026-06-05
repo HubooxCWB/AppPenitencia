@@ -67,6 +67,8 @@ import {
   listCloudUsers,
   listParticipantDirectory,
   loadRangesFromCloud,
+  requestSupabasePasswordReset,
+  restoreSupabasePasswordRecoveryProfileFromUrl,
   restoreSupabaseAuthProfile,
   saveRangesToCloud,
   signInWithSupabaseAuth,
@@ -513,6 +515,20 @@ interface LeaderCheckinDetail {
 
 type RankingMode = 'PICOS' | 'ALTITUDE' | 'SERRAS' | 'CHECKINS' | 'GERAL';
 type RankingPeriod = 'MONTH' | 'ALL_TIME';
+const RANKING_MONTH_OPTIONS = [
+  'Janeiro',
+  'Fevereiro',
+  'Março',
+  'Abril',
+  'Maio',
+  'Junho',
+  'Julho',
+  'Agosto',
+  'Setembro',
+  'Outubro',
+  'Novembro',
+  'Dezembro',
+];
 type RankingLeader = Leader & {
   highestAltitude: number | null;
   highestAltitudePeak: string | null;
@@ -1341,6 +1357,29 @@ export default function App() {
 
     const bootstrapAuth = async () => {
       try {
+        const recoveryProfile = await restoreSupabasePasswordRecoveryProfileFromUrl();
+        if (isCancelled) {
+          return;
+        }
+
+        if (recoveryProfile) {
+          const baseUser = toAppUserFromAuthProfile(recoveryProfile);
+          const syncedUser = baseUser.email
+            ? await upsertCloudUser({
+                authUserId: baseUser.id,
+                email: baseUser.email,
+                username: baseUser.username,
+                displayName: baseUser.name,
+                avatarUrl: resolveCloudAvatarForPersistence(baseUser.avatar, baseUser.username),
+              })
+            : await getMyCloudUser();
+          const mappedUser = mergeUserWithCloudDirectory(baseUser, syncedUser);
+          setUser(mappedUser);
+          setCurrentScreen('LOGIN');
+          setIsPasswordChangeRequired(true);
+          return;
+        }
+
         const authProfile = await restoreSupabaseAuthProfile();
         if (isCancelled) {
           return;
@@ -2862,11 +2901,14 @@ function LoginScreen({
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
   const [error, setError] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setSuccessMessage('');
     setIsLoading(true);
 
     try {
@@ -2900,6 +2942,35 @@ function LoginScreen({
       await onLogin(toAppUserFromAuthProfile(authResult.profile));
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handlePasswordReset = async () => {
+    setError('');
+    setSuccessMessage('');
+
+    if (!isCloudEnabled) {
+      setError('Configure o Supabase no .env.local para usar autenticação.');
+      return;
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) {
+      setError('Informe seu e-mail para receber o link de redefinição.');
+      return;
+    }
+
+    setIsResettingPassword(true);
+    try {
+      const result = await requestSupabasePasswordReset(normalizedEmail);
+      if ('message' in result) {
+        setError(result.message);
+        return;
+      }
+
+      setSuccessMessage('Enviamos um link para redefinir sua senha. Confira seu e-mail.');
+    } finally {
+      setIsResettingPassword(false);
     }
   };
 
@@ -2974,10 +3045,13 @@ function LoginScreen({
           {error && (
             <p className="text-red-400 text-xs font-bold text-center">{error}</p>
           )}
+          {successMessage && (
+            <p className="text-emerald-300 text-xs font-bold text-center">{successMessage}</p>
+          )}
 
           <button 
             type="submit"
-            disabled={isLoading}
+            disabled={isLoading || isResettingPassword}
             className="w-full bg-primary text-background-dark font-bold h-14 rounded-2xl shadow-lg shadow-primary/20 flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50"
           >
             {isLoading ? (
@@ -2989,6 +3063,17 @@ function LoginScreen({
               </>
             )}
           </button>
+
+          {mode === 'signin' && (
+            <button
+              type="button"
+              onClick={handlePasswordReset}
+              disabled={isLoading || isResettingPassword}
+              className="w-full text-primary/70 text-xs font-bold uppercase tracking-widest hover:text-primary transition-colors disabled:opacity-50"
+            >
+              {isResettingPassword ? 'Enviando link...' : 'Esqueci minha senha'}
+            </button>
+          )}
 
         </form>
 
@@ -3067,12 +3152,12 @@ function PasswordUpdateScreen({
           <div className="inline-flex items-center justify-center size-20 bg-primary/10 rounded-3xl border border-primary/20 mb-2">
             <Lock size={36} className="text-primary" />
           </div>
-          <h1 className="text-3xl font-bold tracking-tight">Trocar Senha</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Definir nova senha</h1>
           <p className="text-slate-400 text-sm">
-            Primeiro acesso de <span className="text-slate-200 font-semibold">{user.email ?? user.username}</span>.
+            Conta de <span className="text-slate-200 font-semibold">{user.email ?? user.username}</span>.
           </p>
           <p className="text-slate-500 text-xs">
-            Por segurança, defina uma senha nova para continuar.
+            Por segurança, escolha uma senha nova para continuar.
           </p>
         </header>
 
@@ -5126,6 +5211,10 @@ function RankingScreen({
 
   const [rankingMode, setRankingMode] = useState<RankingMode>('GERAL');
   const [rankingPeriod, setRankingPeriod] = useState<RankingPeriod>('MONTH');
+  const [selectedRankingMonth, setSelectedRankingMonth] = useState(() => {
+    const today = new Date();
+    return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+  });
   const [selectedLeaderId, setSelectedLeaderId] = useState<string | null>(null);
   const [isUserRankingSummaryExpanded, setIsUserRankingSummaryExpanded] = useState(false);
   const geralTabRef = useRef<HTMLButtonElement | null>(null);
@@ -5145,6 +5234,29 @@ function RankingScreen({
   const now = new Date();
   const currentMonth = now.getMonth();
   const currentYear = now.getFullYear();
+  const [selectedRankingYearValue, selectedRankingMonthValue] = selectedRankingMonth.split('-').map(Number);
+  const selectedRankingDate = Number.isFinite(selectedRankingYearValue) && Number.isFinite(selectedRankingMonthValue)
+    ? new Date(selectedRankingYearValue, selectedRankingMonthValue - 1, 1)
+    : new Date(currentYear, currentMonth, 1);
+  const rankingMonthLabel = selectedRankingDate.toLocaleDateString('pt-BR', {
+    month: 'long',
+    year: 'numeric',
+  });
+  const rankingYearOptions = Array.from(
+    new Set([
+      currentYear,
+      ...mountainRanges.flatMap(range =>
+        (Array.isArray(range.peaks) ? range.peaks : []).flatMap(peak =>
+          (Array.isArray(peak.completions) ? peak.completions : [])
+            .map(completion => {
+              const [, , year] = String(completion?.date ?? '').split('/').map(Number);
+              return Number.isFinite(year) ? year : null;
+            })
+            .filter((year): year is number => Boolean(year)),
+        ),
+      ),
+    ]),
+  ).sort((a, b) => b - a);
   const isCompletionInSelectedPeriod = (dateValue: unknown) => {
     if (rankingPeriod === 'ALL_TIME') {
       return true;
@@ -5159,7 +5271,7 @@ function RankingScreen({
       return false;
     }
 
-    return month - 1 === currentMonth && year === currentYear;
+    return month === selectedRankingDate.getMonth() + 1 && year === selectedRankingDate.getFullYear();
   };
 
   try {
@@ -5567,7 +5679,7 @@ function RankingScreen({
         : rankingMode === 'CHECKINS'
           ? '✅ Trilha de Check-ins'
           : '⭐ Liga da Montanha';
-  const rankingPeriodLabel = rankingPeriod === 'MONTH' ? 'Mês atual' : 'Todo tempo';
+  const rankingPeriodLabel = rankingPeriod === 'MONTH' ? rankingMonthLabel : 'Todo tempo';
 
   const top1 = leaders[0];
   const top2 = leaders[1];
@@ -5678,6 +5790,10 @@ function RankingScreen({
     });
   }, [rankingMode]);
 
+  useEffect(() => {
+    setSelectedLeaderId(null);
+  }, [rankingMode, rankingPeriod, selectedRankingMonth]);
+
   return (
     <div className="flex flex-col min-h-screen">
       <header className="sticky top-0 z-10 bg-black/95 backdrop-blur-md border-b border-primary/20 p-4">
@@ -5696,31 +5812,72 @@ function RankingScreen({
             <Settings size={20} />
           </button>
         </div>
-        <div className="mt-3 flex items-center justify-between gap-3">
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Visão: {rankingPeriodLabel}</p>
-          <div className="flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 p-1">
-            <button
-              type="button"
-              onClick={() => setRankingPeriod('MONTH')}
-              className={`h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-colors ${
-                rankingPeriod === 'MONTH'
-                  ? 'bg-primary text-black border-primary'
-                  : 'bg-transparent text-primary border-transparent hover:bg-primary/15'
-              }`}
-            >
-              Mês
-            </button>
-            <button
-              type="button"
-              onClick={() => setRankingPeriod('ALL_TIME')}
-              className={`h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-colors ${
-                rankingPeriod === 'ALL_TIME'
-                  ? 'bg-primary text-black border-primary'
-                  : 'bg-transparent text-primary border-transparent hover:bg-primary/15'
-              }`}
-            >
-              Todo tempo
-            </button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {rankingPeriod === 'MONTH' && (
+              <div className="flex h-10 items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3">
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400" htmlFor="ranking-month">
+                  Mês
+                </label>
+                <select
+                  id="ranking-month"
+                  value={String(selectedRankingDate.getMonth() + 1)}
+                  onChange={(event) => {
+                    const nextMonth = event.target.value.padStart(2, '0');
+                    setSelectedRankingMonth(`${selectedRankingDate.getFullYear()}-${nextMonth}`);
+                  }}
+                  className="h-7 bg-transparent text-xs font-bold text-slate-100 outline-none [color-scheme:dark]"
+                  aria-label="Mês do ranking"
+                >
+                  {RANKING_MONTH_OPTIONS.map((monthLabel, index) => (
+                    <option key={monthLabel} value={String(index + 1)} className="bg-background-dark text-slate-100">
+                      {monthLabel}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={String(selectedRankingDate.getFullYear())}
+                  onChange={(event) => {
+                    const nextYear = event.target.value;
+                    const nextMonth = String(selectedRankingDate.getMonth() + 1).padStart(2, '0');
+                    setSelectedRankingMonth(`${nextYear}-${nextMonth}`);
+                  }}
+                  className="h-7 bg-transparent text-xs font-bold text-slate-100 outline-none [color-scheme:dark]"
+                  aria-label="Ano do ranking"
+                >
+                  {rankingYearOptions.map(year => (
+                    <option key={year} value={String(year)} className="bg-background-dark text-slate-100">
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div className="flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 p-1">
+              <button
+                type="button"
+                onClick={() => setRankingPeriod('MONTH')}
+                className={`h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-colors ${
+                  rankingPeriod === 'MONTH'
+                    ? 'bg-primary text-black border-primary'
+                    : 'bg-transparent text-primary border-transparent hover:bg-primary/15'
+                }`}
+              >
+                Mês
+              </button>
+              <button
+                type="button"
+                onClick={() => setRankingPeriod('ALL_TIME')}
+                className={`h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-colors ${
+                  rankingPeriod === 'ALL_TIME'
+                    ? 'bg-primary text-black border-primary'
+                    : 'bg-transparent text-primary border-transparent hover:bg-primary/15'
+                }`}
+              >
+                Todo tempo
+              </button>
+            </div>
           </div>
         </div>
         <div className="mt-4 flex items-center gap-2 overflow-x-auto no-scrollbar pb-1 pr-4 scroll-smooth snap-x snap-mandatory">
