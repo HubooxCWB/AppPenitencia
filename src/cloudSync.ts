@@ -98,21 +98,6 @@ const persistAuthSession = (session: SupabaseAuthSession) => {
   window.localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session));
 };
 
-const clearAuthTokensFromUrl = () => {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  const searchParams = new URLSearchParams(window.location.search);
-  ['access_token', 'refresh_token', 'expires_at', 'expires_in', 'token_type', 'type'].forEach(param => {
-    searchParams.delete(param);
-  });
-
-  const nextSearch = searchParams.toString();
-  const cleanUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}`;
-  window.history.replaceState(null, document.title, cleanUrl);
-};
-
 const parseAuthSessionRecord = (record: Record<string, unknown> | null): SupabaseAuthSession | null => {
   if (!record) {
     return null;
@@ -267,6 +252,15 @@ const parseAuthResponseError = async (
 
     if (normalizedMessage.includes('weak password')) {
       return 'Escolha uma senha mais forte para continuar.';
+    }
+
+    if (
+      normalizedMessage.includes('token has expired') ||
+      normalizedMessage.includes('token is invalid') ||
+      normalizedMessage.includes('invalid token') ||
+      normalizedMessage.includes('otp')
+    ) {
+      return 'CÃ³digo invÃ¡lido ou expirado. Solicite um novo cÃ³digo e tente novamente.';
     }
 
     if (normalizedMessage.includes('forbidden') || normalizedMessage.includes('permission denied')) {
@@ -611,56 +605,6 @@ export const restoreSupabaseAuthProfile = async (): Promise<CloudAuthProfile | n
   }
 };
 
-export const restoreSupabasePasswordRecoveryProfileFromUrl = async (): Promise<CloudAuthProfile | null> => {
-  if (!hasCloudConfig || typeof window === 'undefined') {
-    return null;
-  }
-
-  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-  const searchParams = new URLSearchParams(window.location.search);
-  const type = hashParams.get('type') ?? searchParams.get('type');
-  if (type !== 'recovery') {
-    return null;
-  }
-
-  const session = parseAuthSessionRecord({
-    access_token: hashParams.get('access_token') ?? searchParams.get('access_token') ?? undefined,
-    refresh_token: hashParams.get('refresh_token') ?? searchParams.get('refresh_token') ?? undefined,
-    expires_at: hashParams.get('expires_at') ?? searchParams.get('expires_at') ?? undefined,
-    expires_in: hashParams.get('expires_in') ?? searchParams.get('expires_in') ?? undefined,
-  });
-
-  clearAuthTokensFromUrl();
-
-  if (!session?.access_token) {
-    return null;
-  }
-
-  try {
-    const authUser = await fetchAuthUser(session.access_token);
-    if (!authUser) {
-      clearStoredAuthSession();
-      return null;
-    }
-
-    const profile = buildAuthProfile(authUser);
-    if (!profile) {
-      clearStoredAuthSession();
-      return null;
-    }
-
-    persistAuthSession({
-      ...session,
-      user: authUser,
-    });
-
-    return profile;
-  } catch {
-    clearStoredAuthSession();
-    return null;
-  }
-};
-
 export const requestSupabasePasswordReset = async (
   email: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
@@ -674,7 +618,6 @@ export const requestSupabasePasswordReset = async (
       headers: buildAuthApiHeaders(),
       body: JSON.stringify({
         email,
-        redirect_to: typeof window === 'undefined' ? undefined : window.location.origin,
       }),
     });
 
@@ -688,6 +631,64 @@ export const requestSupabasePasswordReset = async (
     return { ok: true };
   } catch {
     return { ok: false, message: 'Falha de conexÃ£o ao solicitar redefiniÃ§Ã£o de senha.' };
+  }
+};
+
+export const resetSupabasePasswordWithOtp = async (params: {
+  email: string;
+  token: string;
+  newPassword: string;
+}): Promise<{ ok: true; profile: CloudAuthProfile } | { ok: false; message: string }> => {
+  if (!hasCloudConfig) {
+    return { ok: false, message: 'Supabase nÃ£o estÃ¡ configurado.' };
+  }
+
+  try {
+    const verifyResponse = await fetchWithTimeout(`${SUPABASE_URL}/auth/v1/verify`, {
+      method: 'POST',
+      headers: buildAuthApiHeaders(),
+      body: JSON.stringify({
+        email: params.email,
+        token: params.token,
+        type: 'recovery',
+      }),
+    });
+
+    if (!verifyResponse.ok) {
+      return {
+        ok: false,
+        message: await parseAuthResponseError(verifyResponse, 'CÃ³digo invÃ¡lido ou expirado. Solicite um novo cÃ³digo e tente novamente.'),
+      };
+    }
+
+    const payload = (await verifyResponse.json()) as unknown;
+    const record = asRecord(payload);
+    const session = parseAuthSessionRecord(record);
+    if (!session?.access_token) {
+      return { ok: false, message: 'Resposta invÃ¡lida ao validar o cÃ³digo.' };
+    }
+
+    persistAuthSession(session);
+
+    const passwordResult = await updateSupabaseAuthPassword(params.newPassword);
+    if ('message' in passwordResult) {
+      return passwordResult;
+    }
+
+    const authUser = await fetchAuthUser(session.access_token);
+    const profile = buildAuthProfile(authUser ?? session.user);
+    if (!profile) {
+      return { ok: false, message: 'Senha atualizada, mas nÃ£o foi possÃ­vel carregar seu perfil. Tente entrar com a nova senha.' };
+    }
+
+    persistAuthSession({
+      ...session,
+      user: authUser ?? session.user,
+    });
+
+    return { ok: true, profile };
+  } catch {
+    return { ok: false, message: 'Falha de conexÃ£o ao redefinir a senha.' };
   }
 };
 

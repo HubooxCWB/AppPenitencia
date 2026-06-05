@@ -68,7 +68,7 @@ import {
   listParticipantDirectory,
   loadRangesFromCloud,
   requestSupabasePasswordReset,
-  restoreSupabasePasswordRecoveryProfileFromUrl,
+  resetSupabasePasswordWithOtp,
   restoreSupabaseAuthProfile,
   saveRangesToCloud,
   signInWithSupabaseAuth,
@@ -1357,29 +1357,6 @@ export default function App() {
 
     const bootstrapAuth = async () => {
       try {
-        const recoveryProfile = await restoreSupabasePasswordRecoveryProfileFromUrl();
-        if (isCancelled) {
-          return;
-        }
-
-        if (recoveryProfile) {
-          const baseUser = toAppUserFromAuthProfile(recoveryProfile);
-          const syncedUser = baseUser.email
-            ? await upsertCloudUser({
-                authUserId: baseUser.id,
-                email: baseUser.email,
-                username: baseUser.username,
-                displayName: baseUser.name,
-                avatarUrl: resolveCloudAvatarForPersistence(baseUser.avatar, baseUser.username),
-              })
-            : await getMyCloudUser();
-          const mappedUser = mergeUserWithCloudDirectory(baseUser, syncedUser);
-          setUser(mappedUser);
-          setCurrentScreen('LOGIN');
-          setIsPasswordChangeRequired(true);
-          return;
-        }
-
         const authProfile = await restoreSupabaseAuthProfile();
         if (isCancelled) {
           return;
@@ -2898,8 +2875,13 @@ function LoginScreen({
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const [resetCode, setResetCode] = useState('');
+  const [resetNewPassword, setResetNewPassword] = useState('');
+  const [resetConfirmPassword, setResetConfirmPassword] = useState('');
+  const [mode, setMode] = useState<'signin' | 'signup' | 'reset'>('signin');
   const [showPassword, setShowPassword] = useState(false);
+  const [showResetNewPassword, setShowResetNewPassword] = useState(false);
+  const [showResetConfirmPassword, setShowResetConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isResettingPassword, setIsResettingPassword] = useState(false);
   const [error, setError] = useState('');
@@ -2912,6 +2894,11 @@ function LoginScreen({
     setIsLoading(true);
 
     try {
+      if (mode === 'reset') {
+        await handleResetPasswordSubmit();
+        return;
+      }
+
       if (!isCloudEnabled) {
         setError('Configure o Supabase no .env.local para usar autenticação.');
         return;
@@ -2945,7 +2932,7 @@ function LoginScreen({
     }
   };
 
-  const handlePasswordReset = async () => {
+  const handleRequestPasswordResetCode = async () => {
     setError('');
     setSuccessMessage('');
 
@@ -2956,7 +2943,7 @@ function LoginScreen({
 
     const normalizedEmail = email.trim().toLowerCase();
     if (!normalizedEmail) {
-      setError('Informe seu e-mail para receber o link de redefinição.');
+      setError('Informe seu e-mail para receber o código de redefinição.');
       return;
     }
 
@@ -2968,10 +2955,54 @@ function LoginScreen({
         return;
       }
 
-      setSuccessMessage('Enviamos um link para redefinir sua senha. Confira seu e-mail.');
+      setMode('reset');
+      setSuccessMessage('Enviamos um código para seu e-mail. Digite o código e escolha uma senha nova.');
     } finally {
       setIsResettingPassword(false);
     }
+  };
+
+  const handleResetPasswordSubmit = async () => {
+    if (!isCloudEnabled) {
+      setError('Configure o Supabase no .env.local para usar autenticação.');
+      return;
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedCode = resetCode.trim().replace(/\s+/g, '');
+    if (!normalizedEmail || !normalizedCode || !resetNewPassword || !resetConfirmPassword) {
+      setError('Preencha e-mail, código, nova senha e confirmação.');
+      return;
+    }
+
+    if (resetNewPassword.length < 6) {
+      setError('Use no mínimo 6 caracteres.');
+      return;
+    }
+
+    if (resetNewPassword !== resetConfirmPassword) {
+      setError('As senhas não conferem.');
+      return;
+    }
+
+    const result = await resetSupabasePasswordWithOtp({
+      email: normalizedEmail,
+      token: normalizedCode,
+      newPassword: resetNewPassword,
+    });
+
+    if ('message' in result) {
+      setError(result.message);
+      return;
+    }
+
+    await onLogin(toAppUserFromAuthProfile(result.profile));
+  };
+
+  const switchMode = (nextMode: 'signin' | 'signup' | 'reset') => {
+    setError('');
+    setSuccessMessage('');
+    setMode(nextMode);
   };
 
   return (
@@ -2988,7 +3019,9 @@ function LoginScreen({
           <p className="text-slate-400 text-sm">
             {mode === 'signin'
               ? 'Entre com seu e-mail para continuar sua jornada.'
-              : 'Crie sua conta com e-mail e senha para começar.'}
+              : mode === 'signup'
+                ? 'Crie sua conta com e-mail e senha para começar.'
+                : 'Digite o código recebido por e-mail e escolha uma senha nova.'}
           </p>
         </header>
 
@@ -3019,7 +3052,8 @@ function LoginScreen({
                 />
               </div>
             )}
-            <div className="relative">
+            {mode !== 'reset' && (
+              <div className="relative">
               <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={20} />
               <input 
                 type={showPassword ? 'text' : 'password'} 
@@ -3039,7 +3073,67 @@ function LoginScreen({
               >
                 {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
               </button>
-            </div>
+              </div>
+            )}
+            {mode === 'reset' && (
+              <>
+                <div className="relative">
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={20} />
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    placeholder="Código recebido no e-mail"
+                    value={resetCode}
+                    onChange={(e) => setResetCode(e.target.value)}
+                    className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-4 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
+                    required
+                  />
+                </div>
+                <div className="relative">
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={20} />
+                  <input
+                    type={showResetNewPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    placeholder="Nova senha"
+                    value={resetNewPassword}
+                    onChange={(e) => setResetNewPassword(e.target.value)}
+                    className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetNewPassword((v) => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-primary/60 hover:text-primary transition-colors p-1"
+                    aria-label={showResetNewPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                    title={showResetNewPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                  >
+                    {showResetNewPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                  </button>
+                </div>
+                <div className="relative">
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={20} />
+                  <input
+                    type={showResetConfirmPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    placeholder="Confirmar nova senha"
+                    value={resetConfirmPassword}
+                    onChange={(e) => setResetConfirmPassword(e.target.value)}
+                    className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetConfirmPassword((v) => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-primary/60 hover:text-primary transition-colors p-1"
+                    aria-label={showResetConfirmPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                    title={showResetConfirmPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                  >
+                    {showResetConfirmPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
 
           {error && (
@@ -3058,7 +3152,7 @@ function LoginScreen({
               <div className="size-5 border-2 border-background-dark border-t-transparent rounded-full animate-spin" />
             ) : (
               <>
-                {mode === 'signin' ? 'Entrar na Expedição' : 'Criar Conta'}
+                {mode === 'signin' ? 'Entrar na Expedição' : mode === 'signup' ? 'Criar Conta' : 'Redefinir senha'}
                 <ArrowRight size={20} />
               </>
             )}
@@ -3067,11 +3161,21 @@ function LoginScreen({
           {mode === 'signin' && (
             <button
               type="button"
-              onClick={handlePasswordReset}
+              onClick={handleRequestPasswordResetCode}
               disabled={isLoading || isResettingPassword}
               className="w-full text-primary/70 text-xs font-bold uppercase tracking-widest hover:text-primary transition-colors disabled:opacity-50"
             >
-              {isResettingPassword ? 'Enviando link...' : 'Esqueci minha senha'}
+              {isResettingPassword ? 'Enviando código...' : 'Esqueci minha senha'}
+            </button>
+          )}
+          {mode === 'reset' && (
+            <button
+              type="button"
+              onClick={handleRequestPasswordResetCode}
+              disabled={isLoading || isResettingPassword}
+              className="w-full text-primary/70 text-xs font-bold uppercase tracking-widest hover:text-primary transition-colors disabled:opacity-50"
+            >
+              {isResettingPassword ? 'Reenviando código...' : 'Reenviar código'}
             </button>
           )}
 
@@ -3081,8 +3185,7 @@ function LoginScreen({
           <button
             type="button"
             onClick={() => {
-              setError('');
-              setMode(prev => (prev === 'signin' ? 'signup' : 'signin'));
+              switchMode(mode === 'signup' ? 'signin' : mode === 'reset' ? 'signin' : 'signup');
             }}
             className="text-primary/60 text-xs font-bold uppercase tracking-widest hover:text-primary transition-colors"
           >
