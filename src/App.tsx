@@ -2441,7 +2441,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-[100dvh] bg-background-dark text-slate-100 font-sans w-full relative overflow-x-clip">
+    <div className="min-h-[100dvh] bg-background-dark text-slate-100 font-sans w-full relative overflow-x-clip pt-[env(safe-area-inset-top)]">
       {/* Main Content */}
       <main className="mx-auto w-full max-w-5xl px-0 pb-[calc(6rem+env(safe-area-inset-bottom))]">
         <AnimatePresence mode="wait">
@@ -3006,7 +3006,7 @@ function LoginScreen({
   };
 
   return (
-    <div className="relative mx-auto flex min-h-[100dvh] w-full max-w-md flex-col justify-center overflow-x-hidden px-5 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(1.5rem,env(safe-area-inset-top))] sm:px-8">
+    <main className="relative mx-auto flex min-h-[100dvh] w-full max-w-md flex-col justify-center overflow-x-hidden px-5 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(1.5rem,env(safe-area-inset-top))] sm:px-8">
       {/* Background Glow */}
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 size-64 bg-primary/10 blur-[100px] rounded-full -z-10" />
       
@@ -3187,13 +3187,13 @@ function LoginScreen({
             onClick={() => {
               switchMode(mode === 'signup' ? 'signin' : mode === 'reset' ? 'signin' : 'signup');
             }}
-            className="text-primary/60 text-xs font-bold uppercase tracking-widest hover:text-primary transition-colors"
+            className="text-primary/80 text-xs font-bold uppercase tracking-widest hover:text-primary transition-colors"
           >
             {mode === 'signin' ? 'Não tem conta? Criar agora' : 'Já tem conta? Entrar'}
           </button>
         </footer>
       </div>
-    </div>
+    </main>
   );
 }
 
