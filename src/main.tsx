@@ -4,6 +4,16 @@ import App from './App.tsx';
 import PwaInstallPrompt from './PwaInstallPrompt.tsx';
 import './index.css';
 
+const preventPinchZoom = (event: TouchEvent) => {
+  if (event.touches.length > 1) {
+    event.preventDefault();
+  }
+};
+
+document.addEventListener('touchmove', preventPinchZoom, {passive: false});
+document.addEventListener('gesturestart', event => event.preventDefault());
+document.addEventListener('gesturechange', event => event.preventDefault());
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />

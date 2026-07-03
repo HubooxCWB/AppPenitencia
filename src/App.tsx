@@ -71,6 +71,7 @@ import {
   resetSupabasePasswordWithOtp,
   restoreSupabaseAuthProfile,
   saveRangesToCloud,
+  setSupabaseAuthPersistence,
   signInWithSupabaseAuth,
   signOutSupabaseAuth,
   signUpWithSupabaseAuth,
@@ -1258,13 +1259,22 @@ const persistParticipantDirectory = (rows: CloudParticipantUser[]) => {
 
 export default function App() {
   const cloudSyncEnabled = isCloudSyncEnabled();
+  const [persistLogin, setPersistLogin] = useState(() => {
+    if (typeof window === 'undefined') {
+      return true;
+    }
+
+    return !window.sessionStorage.getItem(AUTH_STORAGE_KEY);
+  });
   const [user, setUser] = useState<User | null>(() => {
     if (typeof window === 'undefined') {
       return null;
     }
 
     try {
-      const savedUser = window.localStorage.getItem(AUTH_STORAGE_KEY);
+      const savedUser =
+        window.localStorage.getItem(AUTH_STORAGE_KEY) ??
+        window.sessionStorage.getItem(AUTH_STORAGE_KEY);
       return savedUser ? (JSON.parse(savedUser) as User) : null;
     } catch {
       return null;
@@ -1315,12 +1325,16 @@ export default function App() {
     }
 
     if (user) {
-      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+      const targetStorage = persistLogin ? window.localStorage : window.sessionStorage;
+      const otherStorage = persistLogin ? window.sessionStorage : window.localStorage;
+      targetStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+      otherStorage.removeItem(AUTH_STORAGE_KEY);
       return;
     }
 
     window.localStorage.removeItem(AUTH_STORAGE_KEY);
-  }, [user]);
+    window.sessionStorage.removeItem(AUTH_STORAGE_KEY);
+  }, [persistLogin, user]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !isSavingCompletion) {
@@ -1623,8 +1637,12 @@ export default function App() {
   const canViewCompletion = (completion?: PeakCompletion | null) =>
     Boolean(completion && doesCompletionBelongToUser(completion, user, currentUserKeys));
 
-  const handleLogin = async (userData: User, options?: { requiresPasswordChange?: boolean }) => {
+  const handleLogin = async (
+    userData: User,
+    options?: { requiresPasswordChange?: boolean; persistLogin?: boolean },
+  ) => {
     let resolvedUser = userData;
+    const shouldPersistLogin = options?.persistLogin ?? true;
 
     if (cloudSyncEnabled && userData.email) {
       const syncedUser = await upsertCloudUser({
@@ -1640,6 +1658,8 @@ export default function App() {
       }
     }
 
+    setPersistLogin(shouldPersistLogin);
+    setSupabaseAuthPersistence(shouldPersistLogin);
     setUser(resolvedUser);
     setIsPasswordChangeRequired(Boolean(options?.requiresPasswordChange));
     setCurrentScreen(options?.requiresPasswordChange ? 'LOGIN' : 'HOME');
@@ -2547,9 +2567,9 @@ export default function App() {
       )}
 
       {/* Bottom Navigation */}
-      <nav className="fixed inset-x-0 bottom-0 z-40">
-        <div className="mx-auto w-full max-w-5xl px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2 sm:px-6">
-          <div className="flex items-center justify-between rounded-[1.75rem] border border-white/8 bg-black/80 px-4 py-2 shadow-2xl backdrop-blur-xl sm:px-6">
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-black/95 shadow-[0_-10px_30px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+        <div className="mx-auto w-full max-w-5xl px-3 pb-[env(safe-area-inset-bottom)] sm:px-6">
+          <div className="flex min-h-16 items-center justify-between px-2 py-1 sm:px-6">
             <NavButton 
               active={currentScreen === 'HOME'} 
               onClick={() => setCurrentScreen('HOME')} 
@@ -2869,7 +2889,10 @@ function LoginScreen({
   onLogin,
   isCloudEnabled,
 }: {
-  onLogin: (user: User, options?: { requiresPasswordChange?: boolean }) => void | Promise<void>;
+  onLogin: (
+    user: User,
+    options?: { requiresPasswordChange?: boolean; persistLogin?: boolean },
+  ) => void | Promise<void>;
   isCloudEnabled: boolean;
 }) {
   const [email, setEmail] = useState('');
@@ -2886,6 +2909,7 @@ function LoginScreen({
   const [isResettingPassword, setIsResettingPassword] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [keepConnected, setKeepConnected] = useState(true);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2910,6 +2934,8 @@ function LoginScreen({
         return;
       }
 
+      setSupabaseAuthPersistence(mode === 'signin' ? keepConnected : true);
+
       const authResult = mode === 'signin'
         ? await signInWithSupabaseAuth({
             email: normalizedEmail,
@@ -2926,7 +2952,9 @@ function LoginScreen({
         return;
       }
 
-      await onLogin(toAppUserFromAuthProfile(authResult.profile));
+      await onLogin(toAppUserFromAuthProfile(authResult.profile), {
+        persistLogin: mode === 'signin' ? keepConnected : true,
+      });
     } finally {
       setIsLoading(false);
     }
@@ -3135,6 +3163,21 @@ function LoginScreen({
               </>
             )}
           </div>
+
+          {mode === 'signin' && (
+            <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-primary/15 bg-primary/5 px-4 py-3 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={keepConnected}
+                onChange={(event) => setKeepConnected(event.target.checked)}
+                className="size-5 accent-primary"
+              />
+              <span>
+                <strong className="block text-slate-100">Manter conta conectada</strong>
+                <span className="text-xs text-slate-400">Continuar conectado ao fechar e abrir o app.</span>
+              </span>
+            </label>
+          )}
 
           {error && (
             <p className="text-red-400 text-xs font-bold text-center">{error}</p>

@@ -61,6 +61,7 @@ interface SupabaseAuthSession {
 }
 
 const AUTH_SESSION_STORAGE_KEY = 'penitencia-supabase-auth-session';
+let shouldPersistAuthSession = true;
 
 export const buildGeneratedAvatarUrl = (_seed: string) => '';
 
@@ -77,7 +78,10 @@ const readStoredAuthSession = (): SupabaseAuthSession | null => {
   }
 
   try {
-    const rawSession = window.localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+    const persistentSession = window.localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+    const temporarySession = window.sessionStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+    shouldPersistAuthSession = Boolean(persistentSession) || !temporarySession;
+    const rawSession = persistentSession ?? temporarySession;
     if (!rawSession) {
       return null;
     }
@@ -95,7 +99,29 @@ const persistAuthSession = (session: SupabaseAuthSession) => {
     return;
   }
 
-  window.localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session));
+  const targetStorage = shouldPersistAuthSession ? window.localStorage : window.sessionStorage;
+  const otherStorage = shouldPersistAuthSession ? window.sessionStorage : window.localStorage;
+  targetStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session));
+  otherStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+};
+
+export const setSupabaseAuthPersistence = (persistAcrossRestarts: boolean) => {
+  shouldPersistAuthSession = persistAcrossRestarts;
+
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const existingSession =
+    window.localStorage.getItem(AUTH_SESSION_STORAGE_KEY) ??
+    window.sessionStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+  window.localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+  window.sessionStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+
+  if (existingSession) {
+    const targetStorage = persistAcrossRestarts ? window.localStorage : window.sessionStorage;
+    targetStorage.setItem(AUTH_SESSION_STORAGE_KEY, existingSession);
+  }
 };
 
 const parseAuthSessionRecord = (record: Record<string, unknown> | null): SupabaseAuthSession | null => {
@@ -136,6 +162,7 @@ const clearStoredAuthSession = () => {
   }
 
   window.localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+  window.sessionStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
 };
 
 const getMetadataString = (user: SupabaseAuthUser | null | undefined, key: string): string | null => {
