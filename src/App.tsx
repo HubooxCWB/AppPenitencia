@@ -53,7 +53,8 @@ import {
   Peak,
   PeakCompletion,
   PeakCategory,
-  LocalType
+  LocalType,
+  ActivityType
 } from './types';
 import {
   buildGeneratedAvatarUrl,
@@ -331,6 +332,21 @@ const sanitizeParticipants = (
     ),
   );
 
+const hasParticipantInCompletion = (
+  completion: PeakCompletion,
+  participantName: string,
+  participantNameMap: Map<string, string>,
+) => {
+  const targetKey = normalizeText(resolveParticipantDisplayName(participantName, participantNameMap));
+  if (!targetKey) {
+    return false;
+  }
+
+  return (Array.isArray(completion.participants) ? completion.participants : []).some(participant =>
+    normalizeText(resolveParticipantDisplayName(participant, participantNameMap)) === targetKey,
+  );
+};
+
 type CompletionGroup = {
   date: string;
   completions: PeakCompletion[];
@@ -510,11 +526,12 @@ interface LeaderCheckinDetail {
   name: string;
   rangeName: string;
   localType: LocalType;
+  activityType: ActivityType;
   date: string;
   timestamp: number;
 }
 
-type RankingMode = 'PICOS' | 'ALTITUDE' | 'SERRAS' | 'CHECKINS' | 'GERAL';
+type RankingMode = 'PICOS' | 'ALTITUDE' | 'SERRAS' | 'CHECKINS' | 'DESTAQUES';
 type RankingPeriod = 'MONTH' | 'ALL_TIME';
 const RANKING_MONTH_OPTIONS = [
   'Janeiro',
@@ -539,6 +556,7 @@ type RankingLeader = Leader & {
   trilhasCount: number;
   cachoeirasCount: number;
   checkinsCount: number;
+  activityBonus: number;
   score: number;
 };
 
@@ -565,6 +583,22 @@ const LOCAL_TYPE_SECTION_LABELS: Record<LocalType, string> = {
   ilha: 'Ilhas',
   cachoeira: 'Cachoeiras',
 };
+const ACTIVITY_TYPES: ActivityType[] = ['ataque', 'bate_volta', 'trekking', 'travessia', 'acampamento'];
+const ACTIVITY_TYPE_LABELS: Record<ActivityType, string> = {
+  bate_volta: 'Bate-volta',
+  ataque: 'Ataque',
+  trekking: 'Trekking',
+  travessia: 'Travessia',
+  acampamento: 'Acampamento',
+};
+const ACTIVITY_TYPE_MONTHLY_BONUS: Record<ActivityType, number> = {
+  ataque: 1,
+  bate_volta: 2,
+  trekking: 3,
+  travessia: 4,
+  acampamento: 5,
+};
+const DEFAULT_ACTIVITY_TYPE: ActivityType = 'bate_volta';
 const LOCAL_TYPE_STYLES: Record<LocalType, {
   sectionTitleClass: string;
   cardCompletedClass: string;
@@ -718,6 +752,12 @@ const getSuggestedLocalTypeForRange = (rangeId: string): LocalType => (
 );
 const isLocalType = (value: unknown): value is LocalType =>
   typeof value === 'string' && LOCAL_TYPES.includes(value as LocalType);
+const isActivityType = (value: unknown): value is ActivityType =>
+  typeof value === 'string' && ACTIVITY_TYPES.includes(value as ActivityType);
+const resolveActivityType = (value: unknown): ActivityType => {
+  const normalized = normalizeText(value).replace(/-/g, '_');
+  return isActivityType(normalized) ? normalized : DEFAULT_ACTIVITY_TYPE;
+};
 const resolvePeakLocalType = (
   peak: Pick<Peak, 'tipo_local' | 'category'> | null | undefined,
 ): LocalType => {
@@ -916,6 +956,12 @@ const normalizePeakCompletions = (peak: Peak): PeakCompletion[] => {
       const wikilocUrl = typeof wikilocCandidate === 'string' && wikilocCandidate.trim()
         ? wikilocCandidate.trim()
         : undefined;
+      const activityType = resolveActivityType(
+        completionRecord.activityType ??
+        completionRecord.activity_type ??
+        completionRecord.tipo_atividade ??
+        completionRecord.tipoRole,
+      );
 
       const idCandidate = completionRecord.id;
       const id = typeof idCandidate === 'string' && idCandidate.trim()
@@ -941,6 +987,7 @@ const normalizePeakCompletions = (peak: Peak): PeakCompletion[] => {
         id,
         date,
         participants,
+        activityType,
         ...(ownerUserId ? { ownerUserId } : {}),
         ...(wikilocUrl ? { wikilocUrl } : {}),
       };
@@ -960,6 +1007,12 @@ const normalizePeakCompletions = (peak: Peak): PeakCompletion[] => {
         peakRecord.participants ??
         peakRecord.participantes ??
         peakRecord.hikers,
+      ),
+      activityType: resolveActivityType(
+        peakRecord.activityType ??
+        peakRecord.activity_type ??
+        peakRecord.tipo_atividade ??
+        peakRecord.tipoRole,
       ),
       wikilocUrl: typeof peakRecord.wikilocUrl === 'string' && peakRecord.wikilocUrl.trim()
         ? peakRecord.wikilocUrl.trim()
@@ -1312,7 +1365,7 @@ export default function App() {
     rangeId: string, 
     peak: Peak, 
     completionId?: string,
-    initialData?: { date: string, participants: string[], wikilocUrl?: string },
+    initialData?: { date: string, participants: string[], wikilocUrl?: string, activityType?: ActivityType },
     isReadOnly?: boolean,
   } | null>(null);
   const participantNameMap = buildParticipantNameMap(registeredUsers, user);
@@ -1799,7 +1852,8 @@ export default function App() {
         initialData: completion ? {
           date: completion.date,
           participants: completion.participants,
-          wikilocUrl: completion.wikilocUrl
+          wikilocUrl: completion.wikilocUrl,
+          activityType: completion.activityType,
         } : undefined
       });
     }
@@ -1873,7 +1927,7 @@ export default function App() {
     })));
   };
 
-  const savePeakCompletion = (rangeId: string, peakId: string, data: { date: string, participants: string[], wikilocUrl?: string }, completionId?: string) => {
+  const savePeakCompletion = (rangeId: string, peakId: string, data: { date: string, participants: string[], wikilocUrl?: string, activityType: ActivityType }, completionId?: string) => {
     if (!user) {
       return;
     }
@@ -1883,7 +1937,10 @@ export default function App() {
     }
 
     const currentUserDisplayName = resolveParticipantDisplayName(user.name, participantNameMap) || user.name;
-    const participantsToPersist = [currentUserDisplayName];
+    const participantsToPersist = sanitizeParticipants(
+      [currentUserDisplayName, ...data.participants],
+      participantNameMap,
+    );
     const targetPeak = mountainRanges
       .find(range => range.id === rangeId)
       ?.peaks.find(peak => peak.id === peakId);
@@ -1898,6 +1955,19 @@ export default function App() {
 
     if (duplicateSameDayCompletion) {
       window.alert('Voce ja tem um check-in neste local nessa data. Edite o check-in existente ou escolha outra data.');
+      return;
+    }
+
+    const duplicatedParticipants = participantsToPersist.filter(participant =>
+      targetPeak?.completions.some(completion =>
+        completion.date === data.date &&
+        completion.id !== completionId &&
+        hasParticipantInCompletion(completion, participant, participantNameMap),
+      ),
+    );
+
+    if (duplicatedParticipants.length > 0) {
+      window.alert(`Ja existe check-in neste local e data para: ${duplicatedParticipants.join(', ')}.`);
       return;
     }
 
@@ -1929,6 +1999,7 @@ export default function App() {
             completionId: existingSameDayCompletionId,
             date: data.date,
             participants: participantsToPersist,
+            activityType: data.activityType,
             wikilocUrl: data.wikilocUrl,
           });
 
@@ -1961,6 +2032,7 @@ export default function App() {
                           id: completion.id,
                           date: completion.date,
                           participants: completion.participants,
+                          activityType: completion.activityType ?? data.activityType,
                           wikilocUrl: completion.wikilocUrl,
                           ownerUserId: completion.ownerUserId ?? user.id,
                         }
@@ -1977,6 +2049,7 @@ export default function App() {
                     id: completion.id,
                     date: completion.date,
                     participants: completion.participants,
+                    activityType: completion.activityType ?? data.activityType,
                     ownerUserId: completion.ownerUserId ?? user.id,
                     wikilocUrl: completion.wikilocUrl,
                   },
@@ -2019,6 +2092,7 @@ export default function App() {
                     ...c, 
                     date: data.date, 
                     participants: participantsToPersist, 
+                    activityType: data.activityType,
                     wikilocUrl: data.wikilocUrl,
                     ownerUserId: existing?.ownerUserId ?? user.id,
                   }
@@ -2031,6 +2105,7 @@ export default function App() {
             id: Math.random().toString(36).substr(2, 9),
             date: data.date,
             participants: participantsToPersist,
+            activityType: data.activityType,
             ownerUserId: user.id,
             wikilocUrl: data.wikilocUrl
           };
@@ -2729,7 +2804,7 @@ function CompletionModal({
   onSave,
 }: { 
   peak: Peak, 
-  initialData?: { date: string, participants: string[], wikilocUrl?: string },
+  initialData?: { date: string, participants: string[], wikilocUrl?: string, activityType?: ActivityType },
   isReadOnly?: boolean,
   isSaving?: boolean,
   participantSuggestions: string[],
@@ -2738,7 +2813,7 @@ function CompletionModal({
   currentUser: User,
   isAdmin: boolean,
   onClose: () => void, 
-  onSave: (data: { date: string, participants: string[], wikilocUrl?: string }) => void 
+  onSave: (data: { date: string, participants: string[], wikilocUrl?: string, activityType: ActivityType }) => void 
 }) {
   const parseBRDateToISO = (brDate: string) => {
     const [day, month, year] = brDate.split('/');
@@ -2760,11 +2835,34 @@ function CompletionModal({
 
   const [date, setDate] = useState(initialData ? parseBRDateToISO(initialData.date) : getTodayLocalISODate());
   const currentUserDisplayName = resolveParticipantDisplayName(currentUser.name, participantNameMap) || currentUser.name;
-  const participants = isReadOnly
-    ? sanitizeParticipants(initialData?.participants ?? [], participantNameMap)
-    : [currentUserDisplayName];
+  const [participants, setParticipants] = useState(() =>
+    isReadOnly
+      ? sanitizeParticipants(initialData?.participants ?? [], participantNameMap)
+      : sanitizeParticipants(initialData?.participants?.length ? initialData.participants : [currentUserDisplayName], participantNameMap),
+  );
   const formDisabled = isReadOnly || isSaving;
+  const [activityType, setActivityType] = useState<ActivityType>(resolveActivityType(initialData?.activityType));
   const [wikilocUrl, setWikilocUrl] = useState(initialData?.wikilocUrl || '');
+  const participantKeys = new Set(participants.map(participant => normalizeText(participant)));
+  const availableParticipants = sanitizeParticipants(participantSuggestions, participantNameMap)
+    .filter(participant => normalizeText(participant) !== normalizeText(currentUserDisplayName))
+    .filter(participant => !participantKeys.has(normalizeText(participant)));
+
+  const addParticipant = (participant: string) => {
+    if (formDisabled) {
+      return;
+    }
+
+    setParticipants(current => sanitizeParticipants([...current, participant], participantNameMap));
+  };
+
+  const removeParticipant = (participant: string) => {
+    if (formDisabled || normalizeText(participant) === normalizeText(currentUserDisplayName)) {
+      return;
+    }
+
+    setParticipants(current => current.filter(item => normalizeText(item) !== normalizeText(participant)));
+  };
 
   useEffect(() => {
     const previousBodyOverflow = document.body.style.overflow;
@@ -2821,15 +2919,80 @@ function CompletionModal({
           {/* Participant */}
           <div className="space-y-1.5">
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
-              <UserIcon size={12} /> {isReadOnly ? 'Participantes' : 'Check-in individual'}
+              <UserIcon size={12} /> {isReadOnly ? 'Participantes' : 'Quem foi junto'}
             </label>
             <div className="flex flex-wrap gap-2 mt-2">
               {participants.map(p => (
                 <span key={p} className="bg-primary/10 text-primary text-[10px] font-bold px-3 py-1.5 rounded-full border border-primary/20 flex items-center gap-1.5">
                   {p}
+                  {!isReadOnly && normalizeText(p) !== normalizeText(currentUserDisplayName) && (
+                    <button
+                      type="button"
+                      onClick={() => removeParticipant(p)}
+                      disabled={formDisabled}
+                      className="text-primary/70 hover:text-primary disabled:opacity-40"
+                      aria-label={`Remover ${p}`}
+                      title="Remover participante"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
                 </span>
               ))}
             </div>
+            {!isReadOnly && (
+              <div className="space-y-2 pt-2">
+                <p className="text-[11px] text-slate-400">
+                  Adicione apenas quem esta na plataforma e participou deste role.
+                </p>
+                <div className="flex max-h-24 flex-wrap gap-2 overflow-y-auto rounded-2xl border border-white/10 bg-black/20 p-2">
+                  {isLoadingParticipantSuggestions ? (
+                    <span className="text-[11px] font-bold text-slate-500">Carregando participantes...</span>
+                  ) : availableParticipants.length === 0 ? (
+                    <span className="text-[11px] font-bold text-slate-500">Nenhum outro participante disponivel.</span>
+                  ) : (
+                    availableParticipants.map(participant => (
+                      <button
+                        key={participant}
+                        type="button"
+                        onClick={() => addParticipant(participant)}
+                        disabled={formDisabled}
+                        className="rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-[10px] font-bold text-primary transition-colors hover:bg-primary/15 disabled:opacity-40"
+                      >
+                        + {participant}
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Activity Type */}
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
+              <Route size={12} /> Tipo de Rolê
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {ACTIVITY_TYPES.map(type => (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => setActivityType(type)}
+                  disabled={formDisabled}
+                  className={`h-11 rounded-2xl border px-3 text-left text-[11px] font-bold uppercase tracking-wider transition-colors disabled:opacity-60 ${
+                    activityType === type
+                      ? 'border-primary bg-primary text-background-dark'
+                      : 'border-primary/20 bg-primary/5 text-primary hover:bg-primary/15'
+                  }`}
+                >
+                  {ACTIVITY_TYPE_LABELS[type]}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Pontua nos destaques mensais de acordo com o tipo de atividade.
+            </p>
           </div>
 
           {/* Wikiloc URL */}
@@ -2872,6 +3035,7 @@ function CompletionModal({
               onClick={() => onSave({
                 date: formatISOToBRDate(date),
                 participants,
+                activityType,
                 wikilocUrl,
               })}
               className="flex-1 h-12 rounded-2xl bg-primary text-background-dark font-bold text-base sm:text-sm disabled:opacity-60"
@@ -4893,6 +5057,7 @@ function MountainRangeAccordion({
                                     group.completions.find(completion => canDeleteCompletion(completion)) ??
                                     (canManageCatalog ? group.completions[0] : undefined);
                                   const firstWikilocCompletion = group.completions.find(completion => completion.wikilocUrl);
+                                  const groupActivityType = resolveActivityType(visibleCompletion?.activityType ?? group.completions[0]?.activityType);
                                   const canOpenGroup = Boolean(visibleCompletion && canViewCompletion(visibleCompletion));
 
                                   return (
@@ -4924,7 +5089,12 @@ function MountainRangeAccordion({
                                       </button>
                                     )}
                                     <div className="flex justify-between items-start mb-1">
-                                      <span className={`text-[10px] font-bold ${style.completionDateClass}`}>{group.date}</span>
+                                      <div>
+                                        <span className={`text-[10px] font-bold ${style.completionDateClass}`}>{group.date}</span>
+                                        <p className="mt-0.5 text-[9px] font-bold uppercase tracking-wider text-slate-400">
+                                          {ACTIVITY_TYPE_LABELS[groupActivityType]}
+                                        </p>
+                                      </div>
                                       {firstWikilocCompletion?.wikilocUrl && (
                                         <a
                                           href={firstWikilocCompletion.wikilocUrl}
@@ -4988,6 +5158,7 @@ interface TimelineEvent {
   peakName: string;
   rangeName: string;
   localType: LocalType;
+  activityType: ActivityType;
   dateLabel: string;
   timestamp: number;
   participants: string[];
@@ -5056,6 +5227,7 @@ function TimelineScreen({
             peakName: peak.name,
             rangeName: range.name,
             localType,
+            activityType: resolveActivityType(completion.activityType),
             dateLabel: completion.date || 'Sem data',
             timestamp,
             participants: (Array.isArray(completion.participants) ? completion.participants : [])
@@ -5296,6 +5468,7 @@ function TimelineScreen({
                             </div>
                             <p className="text-lg font-bold leading-tight text-slate-100">{event.peakName}</p>
                             <p className="mt-1 text-xs text-slate-400">📍 {event.rangeName}</p>
+                            <p className="mt-1 text-xs font-bold text-primary/80">{ACTIVITY_TYPE_LABELS[event.activityType]}</p>
                             {event.participants.length > 0 && (
                               <p className="mt-2 truncate text-xs text-slate-400">👥 {event.participants.join(', ')}</p>
                             )}
@@ -5355,15 +5528,15 @@ function RankingScreen({
     return Number.isFinite(timestamp) ? timestamp : 0;
   };
 
-  const [rankingMode, setRankingMode] = useState<RankingMode>('GERAL');
-  const [rankingPeriod, setRankingPeriod] = useState<RankingPeriod>('MONTH');
+  const [rankingMode, setRankingMode] = useState<RankingMode>('DESTAQUES');
+  const [rankingPeriod] = useState<RankingPeriod>('MONTH');
   const [selectedRankingMonth, setSelectedRankingMonth] = useState(() => {
     const today = new Date();
     return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
   });
   const [selectedLeaderId, setSelectedLeaderId] = useState<string | null>(null);
   const [isUserRankingSummaryExpanded, setIsUserRankingSummaryExpanded] = useState(false);
-  const geralTabRef = useRef<HTMLButtonElement | null>(null);
+  const destaquesTabRef = useRef<HTMLButtonElement | null>(null);
   const picosTabRef = useRef<HTMLButtonElement | null>(null);
   const altitudeTabRef = useRef<HTMLButtonElement | null>(null);
   const serrasTabRef = useRef<HTMLButtonElement | null>(null);
@@ -5372,7 +5545,7 @@ function RankingScreen({
   let leadersByAltitude: RankingLeader[] = [];
   let leadersBySerras: RankingLeader[] = [];
   let leadersByCheckins: RankingLeader[] = [];
-  let leadersByGeral: RankingLeader[] = [];
+  let leadersByDestaques: RankingLeader[] = [];
   let leaderTrailDetails = new Map<string, LeaderTrailScore[]>();
   let leaderAltitudeDetails = new Map<string, LeaderTrailScore[]>();
   let leaderConqueredRangeDetails = new Map<string, string[]>();
@@ -5434,6 +5607,7 @@ function RankingScreen({
       trilhas: new Set<string>(),
       cachoeiras: new Set<string>(),
       checkinsCount: 0,
+      activityBonus: 0,
       checkins: [] as LeaderCheckinDetail[],
       lastTrail: undefined as string | undefined,
       lastDate: 0,
@@ -5453,6 +5627,7 @@ function RankingScreen({
         trilhas: Set<string>;
         cachoeiras: Set<string>;
         checkinsCount: number;
+        activityBonus: number;
         checkins: LeaderCheckinDetail[];
         lastTrail?: string;
         lastDate: number;
@@ -5500,6 +5675,7 @@ function RankingScreen({
           }
 
           const completionDate = parseBRDate((completion as PeakCompletion | undefined)?.date);
+          const activityType = resolveActivityType((completion as PeakCompletion | undefined)?.activityType);
           const completionLabel = typeof (completion as PeakCompletion | undefined)?.date === 'string'
             ? (completion as PeakCompletion).date
             : '';
@@ -5526,11 +5702,13 @@ function RankingScreen({
             const participantStats = leaderboardMap.get(participantKey) ?? createParticipantStats(participantName);
 
             participantStats.checkinsCount += 1;
+            participantStats.activityBonus += ACTIVITY_TYPE_MONTHLY_BONUS[activityType];
             participantStats.checkins.push({
               id: `${trailId}:${typeof (completion as PeakCompletion | undefined)?.id === 'string' ? (completion as PeakCompletion).id : completionIndex}`,
               name: safePeakName,
               rangeName: safeRangeName,
               localType: safePeakLocalType,
+              activityType,
               date: completionLabel,
               timestamp: completionDate,
             });
@@ -5619,6 +5797,7 @@ function RankingScreen({
         trilhas: Set<string>;
         cachoeiras: Set<string>;
         checkinsCount: number;
+        activityBonus: number;
         checkins: LeaderCheckinDetail[];
         lastTrail?: string;
       },
@@ -5637,7 +5816,8 @@ function RankingScreen({
       const trilhasCount = stats.trilhas.size;
       const cachoeirasCount = stats.cachoeiras.size;
       const checkinsCount = stats.checkinsCount;
-      const score = (picosCount * 10) + (conqueredRangesCount * 30) + (trilhasCount * 5) + (cachoeirasCount * 3);
+      const activityBonus = stats.activityBonus;
+      const score = (picosCount * 10) + (conqueredRangesCount * 30) + (trilhasCount * 5) + (cachoeirasCount * 3) + activityBonus;
 
       return {
         id: participantKey,
@@ -5654,6 +5834,7 @@ function RankingScreen({
         trilhasCount,
         cachoeirasCount,
         checkinsCount,
+        activityBonus,
         score,
       };
     };
@@ -5671,17 +5852,6 @@ function RankingScreen({
       .sort((a, b) => {
         const aStats = a[1];
         const bStats = b[1];
-        const altitudeTotalA = Array.from(aStats.altitudeLocals.values()).reduce(
-          (acc, local) => acc + (typeof local.altitude_metros === 'number' ? local.altitude_metros : 0),
-          0,
-        );
-        const altitudeTotalB = Array.from(bStats.altitudeLocals.values()).reduce(
-          (acc, local) => acc + (typeof local.altitude_metros === 'number' ? local.altitude_metros : 0),
-          0,
-        );
-        if (altitudeTotalB !== altitudeTotalA) {
-          return altitudeTotalB - altitudeTotalA;
-        }
         if ((bStats.highestAltitude ?? 0) !== (aStats.highestAltitude ?? 0)) {
           return (bStats.highestAltitude ?? 0) - (aStats.highestAltitude ?? 0);
         }
@@ -5725,12 +5895,12 @@ function RankingScreen({
         return aStats.name.localeCompare(bStats.name, 'pt-BR');
       })
       .map(([participantKey, stats], index) => toRankingLeader(participantKey, stats, index + 1));
-    leadersByGeral = participantEntries
+    leadersByDestaques = participantEntries
       .sort((a, b) => {
         const aStats = a[1];
         const bStats = b[1];
-        const scoreA = (aStats.trails.size * 10) + (aStats.conqueredRanges.size * 30) + (aStats.trilhas.size * 5) + (aStats.cachoeiras.size * 3);
-        const scoreB = (bStats.trails.size * 10) + (bStats.conqueredRanges.size * 30) + (bStats.trilhas.size * 5) + (bStats.cachoeiras.size * 3);
+        const scoreA = (aStats.trails.size * 10) + (aStats.conqueredRanges.size * 30) + (aStats.trilhas.size * 5) + (aStats.cachoeiras.size * 3) + aStats.activityBonus;
+        const scoreB = (bStats.trails.size * 10) + (bStats.conqueredRanges.size * 30) + (bStats.trilhas.size * 5) + (bStats.cachoeiras.size * 3) + bStats.activityBonus;
 
         if (scoreB !== scoreA) return scoreB - scoreA;
         if (bStats.trails.size !== aStats.trails.size) return bStats.trails.size - aStats.trails.size;
@@ -5800,7 +5970,7 @@ function RankingScreen({
     leadersByAltitude = [];
     leadersBySerras = [];
     leadersByCheckins = [];
-    leadersByGeral = [];
+    leadersByDestaques = [];
     leaderTrailDetails = new Map();
     leaderAltitudeDetails = new Map();
     leaderConqueredRangeDetails = new Map();
@@ -5815,16 +5985,16 @@ function RankingScreen({
         ? leadersBySerras
         : rankingMode === 'CHECKINS'
           ? leadersByCheckins
-          : leadersByGeral;
+          : leadersByDestaques;
   const rankingTitle = rankingMode === 'PICOS'
     ? '🏆 Trilha de Picos'
     : rankingMode === 'ALTITUDE'
-      ? '⛰ Trilha de Altitude'
+      ? 'Maior Altitude do Mês'
       : rankingMode === 'SERRAS'
         ? '🧭 Regiões Conquistadas'
         : rankingMode === 'CHECKINS'
           ? '✅ Trilha de Check-ins'
-          : '⭐ Liga da Montanha';
+          : 'Destaques do Mês';
   const rankingPeriodLabel = rankingPeriod === 'MONTH' ? rankingMonthLabel : 'Todo tempo';
 
   const top1 = leaders[0];
@@ -5834,7 +6004,7 @@ function RankingScreen({
     const metricValue = rankingMode === 'PICOS'
       ? leader.peaks
       : rankingMode === 'ALTITUDE'
-        ? leader.altitudeTotal
+        ? (leader.highestAltitude ?? 0)
         : rankingMode === 'SERRAS'
           ? leader.conqueredRangesCount
           : rankingMode === 'CHECKINS'
@@ -5852,7 +6022,7 @@ function RankingScreen({
     rankingMode === 'PICOS'
       ? leader.peaks
       : rankingMode === 'ALTITUDE'
-        ? leader.altitudeTotal
+        ? (leader.highestAltitude ?? 0)
         : rankingMode === 'SERRAS'
           ? leader.conqueredRangesCount
           : rankingMode === 'CHECKINS'
@@ -5903,7 +6073,7 @@ function RankingScreen({
   );
   const currentUserLeaderInMode = leaders.find(leader => currentUserRankingKeys.includes(leader.id)) ?? null;
   const currentUserLeaderOverall =
-    leadersByGeral.find(leader => currentUserRankingKeys.includes(leader.id)) ??
+    leadersByDestaques.find(leader => currentUserRankingKeys.includes(leader.id)) ??
     leadersByCheckins.find(leader => currentUserRankingKeys.includes(leader.id)) ??
     leadersByPicos.find(leader => currentUserRankingKeys.includes(leader.id)) ??
     leadersBySerras.find(leader => currentUserRankingKeys.includes(leader.id)) ??
@@ -5919,8 +6089,8 @@ function RankingScreen({
   const userMaiorAltitude = currentUserLeaderOverall?.highestAltitude ?? null;
 
   useEffect(() => {
-    const activeTab = rankingMode === 'GERAL'
-      ? geralTabRef.current
+    const activeTab = rankingMode === 'DESTAQUES'
+      ? destaquesTabRef.current
       : rankingMode === 'PICOS'
         ? picosTabRef.current
         : rankingMode === 'ALTITUDE'
@@ -5959,7 +6129,7 @@ function RankingScreen({
           </button>
         </div>
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Visão: {rankingPeriodLabel}</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Visão mensal: {rankingPeriodLabel}</p>
           <div className="flex flex-wrap items-center justify-end gap-2">
             {rankingPeriod === 'MONTH' && (
               <div className="flex h-10 items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3">
@@ -6000,44 +6170,23 @@ function RankingScreen({
                 </select>
               </div>
             )}
-            <div className="flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 p-1">
-              <button
-                type="button"
-                onClick={() => setRankingPeriod('MONTH')}
-                className={`h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-colors ${
-                  rankingPeriod === 'MONTH'
-                    ? 'bg-primary text-black border-primary'
-                    : 'bg-transparent text-primary border-transparent hover:bg-primary/15'
-                }`}
-              >
-                Mês
-              </button>
-              <button
-                type="button"
-                onClick={() => setRankingPeriod('ALL_TIME')}
-                className={`h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-colors ${
-                  rankingPeriod === 'ALL_TIME'
-                    ? 'bg-primary text-black border-primary'
-                    : 'bg-transparent text-primary border-transparent hover:bg-primary/15'
-                }`}
-              >
-                Todo tempo
-              </button>
-            </div>
+            <p className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-primary">
+              Renova todo mês
+            </p>
           </div>
         </div>
         <div className="mt-4 flex items-center gap-2 overflow-x-auto no-scrollbar pb-1 pr-4 scroll-smooth snap-x snap-mandatory">
           <button
-            ref={geralTabRef}
+            ref={destaquesTabRef}
             type="button"
-            onClick={() => setRankingMode('GERAL')}
+            onClick={() => setRankingMode('DESTAQUES')}
             className={`h-9 px-3 rounded-xl text-[11px] font-bold uppercase tracking-wider border transition-colors whitespace-nowrap snap-start ${
-              rankingMode === 'GERAL'
+              rankingMode === 'DESTAQUES'
                 ? 'bg-primary text-black border-primary'
                 : 'bg-primary/10 text-primary border-primary/30 hover:bg-primary/20'
             }`}
           >
-            ⭐ Geral
+            Destaques
           </button>
           <button
             ref={picosTabRef}
@@ -6142,7 +6291,7 @@ function RankingScreen({
                       ? 'Sem ranking de regiões conquistadas neste periodo. Complete todas as metas de uma região para pontuar aqui.'
                       : rankingMode === 'CHECKINS'
                         ? 'Sem ranking de check-ins neste periodo. Registre atividades para competir por frequência.'
-                        : 'Sem ranking geral neste periodo. Registre conquistas para calcular a pontuação combinada.'}
+                        : 'Sem destaques neste mês. Registre conquistas para calcular a pontuação mensal.'}
               </p>
             </div>
           </section>
@@ -6237,7 +6386,7 @@ function PodiumItem({ leader, rank, height, mode, featured = false, isTied = fal
   const scoreLabel = mode === 'PICOS'
     ? `${leader.peaks} picos`
     : mode === 'ALTITUDE'
-      ? (leader.altitudeTotal > 0 ? `${leader.altitudeTotal} m` : 'Sem altitude')
+      ? (leader.highestAltitude ? `${leader.highestAltitude} m` : 'Sem altitude')
       : mode === 'SERRAS'
         ? `${leader.conqueredRangesCount}`
         : mode === 'CHECKINS'
@@ -6270,9 +6419,9 @@ function PodiumItem({ leader, rank, height, mode, featured = false, isTied = fal
       {mode === 'ALTITUDE' && leader.highestAltitudePeak && (
         <p className="text-[9px] text-slate-400 truncate w-full text-center">({leader.highestAltitudePeak})</p>
       )}
-      {mode === 'GERAL' && (
+      {mode === 'DESTAQUES' && (
         <p className="text-[9px] text-slate-400 truncate w-full text-center">
-          {leader.peaks}p/m • {leader.conqueredRangesCount}sc • {leader.trilhasCount}t • {leader.cachoeirasCount}ca • {leader.checkinsCount}ci
+          {leader.peaks}p/m • {leader.conqueredRangesCount}sc • {leader.trilhasCount}t • {leader.cachoeirasCount}ca • +{leader.activityBonus} bônus
         </p>
       )}
       {isTied && (
@@ -6305,7 +6454,7 @@ function LeaderRow({ leader, mode, isTied = false, onViewTrails }: LeaderRowProp
   const scoreLabel = mode === 'PICOS'
     ? `${leader.peaks}`
     : mode === 'ALTITUDE'
-      ? (leader.altitudeTotal > 0 ? `${leader.altitudeTotal} m` : 'Sem altitude')
+      ? (leader.highestAltitude ? `${leader.highestAltitude} m` : 'Sem altitude')
       : mode === 'SERRAS'
         ? `${leader.conqueredRangesCount}`
         : mode === 'CHECKINS'
@@ -6341,7 +6490,7 @@ function LeaderRow({ leader, mode, isTied = false, onViewTrails }: LeaderRowProp
         ) : mode === 'CHECKINS' ? (
           <p className="text-[9px] text-primary font-bold uppercase tracking-tighter">Check-ins</p>
         ) : (
-          <p className="text-[9px] text-primary font-bold uppercase tracking-tighter">Score</p>
+          <p className="text-[9px] text-primary font-bold uppercase tracking-tighter">Pontos do mês</p>
         )}
         <button
           type="button"
@@ -6400,16 +6549,16 @@ function TrailScoreModal({
             <p className="text-[10px] font-bold text-primary uppercase tracking-widest">
               {mode === 'SERRAS'
                 ? 'Regiões Conquistadas'
-                : mode === 'GERAL'
-                  ? 'Score Geral'
+                : mode === 'DESTAQUES'
+                  ? 'Destaques do Mês'
                   : mode === 'ALTITUDE'
-                    ? 'Locais com Altitude'
+                    ? 'Maior Altitude'
                     : mode === 'CHECKINS'
                       ? 'Check-ins Totais'
                       : 'Picos Conquistados'}
             </p>
             <h2 className="text-lg font-bold leading-tight">{leader.name}</h2>
-            {mode === 'GERAL' ? (
+            {mode === 'DESTAQUES' ? (
               <p className="text-xs text-primary mt-1">{leader.score} pts</p>
             ) : mode === 'CHECKINS' ? (
               <p className="text-xs text-primary mt-1">{leader.checkinsCount} atividade(s) registrada(s)</p>
@@ -6417,9 +6566,9 @@ function TrailScoreModal({
               <p className="text-xs text-slate-400 mt-1">{conqueredRanges.length} serra(s) conquistada(s)</p>
             ) : mode === 'ALTITUDE' ? (
               <p className="text-xs text-primary mt-1">
-                {leader.altitudeTotal > 0
-                  ? `Altitude acumulada: ${leader.altitudeTotal} m`
-                  : 'Altitude acumulada: Sem altitude'}
+                {leader.highestAltitude
+                  ? `${leader.highestAltitude} m em ${leader.highestAltitudePeak}`
+                  : 'Sem altitude registrada'}
               </p>
             ) : (
               <p className="text-xs text-slate-400 mt-1">{trails.length} pico(s) contabilizado(s)</p>
@@ -6430,15 +6579,16 @@ function TrailScoreModal({
           </button>
         </div>
 
-        {mode === 'GERAL' ? (
+        {mode === 'DESTAQUES' ? (
           <div className="space-y-3">
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-1.5">
-              <p className="text-[10px] font-bold uppercase tracking-wider text-primary">Fórmula do Score</p>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-primary">Fórmula Mensal</p>
               <p className="text-xs text-slate-300">{leader.peaks} picos e morros × 10 = {leader.peaks * 10}</p>
               <p className="text-xs text-slate-300">{leader.conqueredRangesCount} regiões conquistadas × 30 = {leader.conqueredRangesCount * 30}</p>
               <p className="text-xs text-slate-300">{leader.trilhasCount} trilhas × 5 = {leader.trilhasCount * 5}</p>
               <p className="text-xs text-slate-300">{leader.cachoeirasCount} cachoeiras × 3 = {leader.cachoeirasCount * 3}</p>
-              <p className="text-xs text-slate-400">Check-ins totais: {leader.checkinsCount} (nao alteram o score)</p>
+              <p className="text-xs text-slate-300">Pontos por tipo de rolê = {leader.activityBonus}</p>
+              <p className="text-xs text-slate-400">Check-ins totais: {leader.checkinsCount}</p>
               <p className="text-sm font-bold text-primary pt-1 border-t border-primary/20">Total: {leader.score} pts</p>
             </div>
           </div>
@@ -6459,6 +6609,9 @@ function TrailScoreModal({
                   </div>
                   <p className="text-[11px] text-slate-400 mt-1">
                     {checkin.rangeName}{checkin.date ? ` • ${checkin.date}` : ''}
+                  </p>
+                  <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-primary/80">
+                    {ACTIVITY_TYPE_LABELS[checkin.activityType]}
                   </p>
                 </div>
               ))}
@@ -6498,7 +6651,7 @@ function TrailScoreModal({
                 </div>
                 <p className="text-[11px] text-slate-400 mt-1">
                   {mode === 'ALTITUDE'
-                    ? `${trail.rangeName} • ${typeof trail.altitude_metros === 'number' ? `${trail.altitude_metros} m` : 'Sem altitude'}`
+                    ? `${trail.rangeName} • altitude do local: ${typeof trail.altitude_metros === 'number' ? `${trail.altitude_metros} m` : 'Sem altitude'}`
                     : trail.rangeName}
                 </p>
               </div>
