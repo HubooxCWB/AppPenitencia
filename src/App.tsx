@@ -86,6 +86,7 @@ const AUTH_STORAGE_KEY = 'penitencia-auth-user';
 const MOUNTAIN_RANGES_STORAGE_KEY = 'penitencia-mountain-ranges';
 const MOUNTAIN_RANGES_BACKUP_STORAGE_KEY = 'penitencia-mountain-ranges-backup';
 const PARTICIPANT_DIRECTORY_STORAGE_KEY = 'penitencia-participant-directory';
+const RELEASE_NOTES_STORAGE_KEY = 'penitencia-release-notes-2026-09-ranking-checkins';
 const normalizeText = (value: unknown) =>
   String(value ?? '')
     .normalize('NFD')
@@ -1349,6 +1350,7 @@ export default function App() {
   const [registeredUsers, setRegisteredUsers] = useState<CloudParticipantUser[]>(() => readStoredParticipantDirectory());
   const [isLoadingRegisteredUsers, setIsLoadingRegisteredUsers] = useState(false);
   const [isSavingCompletion, setIsSavingCompletion] = useState(false);
+  const [isReleaseNotesOpen, setIsReleaseNotesOpen] = useState(false);
   const [completionSyncStatus, setCompletionSyncStatus] = useState<{
     state: 'idle' | 'saving' | 'success' | 'error';
     message: string;
@@ -1402,6 +1404,26 @@ export default function App() {
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [isSavingCompletion]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !user || isAuthBootstrapping) {
+      return;
+    }
+
+    if (window.localStorage.getItem(RELEASE_NOTES_STORAGE_KEY) === 'seen') {
+      return;
+    }
+
+    setIsReleaseNotesOpen(true);
+  }, [isAuthBootstrapping, user]);
+
+  const dismissReleaseNotes = () => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(RELEASE_NOTES_STORAGE_KEY, 'seen');
+    }
+
+    setIsReleaseNotesOpen(false);
+  };
 
   useEffect(() => () => {
     if (typeof window === 'undefined') {
@@ -2536,7 +2558,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-[100dvh] bg-background-dark text-slate-100 font-sans w-full relative overflow-x-clip pt-[env(safe-area-inset-top)]">
+    <div className="h-[100dvh] overflow-y-auto overflow-x-clip overscroll-y-contain bg-background-dark text-slate-100 font-sans w-full relative pt-[env(safe-area-inset-top)]">
       {/* Main Content */}
       <main className="mx-auto w-full max-w-5xl px-0 pb-[calc(6rem+env(safe-area-inset-bottom))]">
         <AnimatePresence mode="wait">
@@ -2602,6 +2624,12 @@ export default function App() {
             onClose={() => setIsCompletingPeak(null)}
             onSave={(data) => savePeakCompletion(isCompletingPeak.rangeId, isCompletingPeak.peak.id, data, isCompletingPeak.completionId)}
           />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isReleaseNotesOpen && (
+          <ReleaseNotesModal onClose={dismissReleaseNotes} />
         )}
       </AnimatePresence>
 
@@ -2679,6 +2707,92 @@ export default function App() {
         </div>
       </nav>
     </div>
+  );
+}
+
+function ReleaseNotesModal({ onClose }: { onClose: () => void }) {
+  const updates = [
+    {
+      title: 'Ranking mensal mais justo',
+      description: 'Os destaques agora renovam todo mês e deixam a disputa geral em segundo plano.',
+      icon: <Trophy size={18} />,
+    },
+    {
+      title: 'Tipo de rolê no check-in',
+      description: 'Marque bate-volta, ataque, trekking, travessia ou acampamento.',
+      icon: <Route size={18} />,
+    },
+    {
+      title: 'Quem foi junto',
+      description: 'Adicione companheiros da plataforma e evite registros repetidos no mesmo local e data.',
+      icon: <Users size={18} />,
+    },
+  ];
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[110] flex items-center justify-center overflow-x-hidden bg-black/80 p-3 backdrop-blur-sm sm:p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="release-notes-title"
+    >
+      <motion.div
+        initial={{ scale: 0.96, opacity: 0, y: 18 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.96, opacity: 0, y: 18 }}
+        className="w-full max-w-md overflow-hidden rounded-[1.75rem] border border-primary/20 bg-neutral-forest shadow-2xl shadow-black/50"
+      >
+        <div className="border-b border-white/10 bg-primary/10 px-5 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-[10px] font-black uppercase tracking-[0.22em] text-primary">
+                Atualização
+              </p>
+              <h2 id="release-notes-title" className="mt-1 text-xl font-black text-white">
+                Novidades no Penitência
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex size-10 shrink-0 items-center justify-center rounded-full border border-white/10 bg-black/30 text-slate-300 transition-colors hover:border-primary/40 hover:text-primary"
+              aria-label="Fechar novidades"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="space-y-3 p-5">
+          {updates.map(update => (
+            <div key={update.title} className="flex gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+                {update.icon}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-sm font-black text-white">{update.title}</span>
+                <span className="mt-0.5 block text-xs font-medium leading-relaxed text-slate-400">
+                  {update.description}
+                </span>
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div className="px-5 pb-5">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-12 w-full rounded-2xl bg-primary text-sm font-black text-background-dark transition-transform active:scale-[0.98]"
+          >
+            Entendi
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -4833,22 +4947,23 @@ function SerrasScreen({
       <div className="space-y-4 overflow-x-hidden p-4">
         {filteredRanges.length > 0 ? (
           filteredRanges.map(range => (
-            <MountainRangeAccordion 
-              key={range.id} 
-              range={range} 
-              isOpen={expandedRangeId === range.id}
-              onToggle={() => setExpandedRangeId(current => (current === range.id ? null : range.id))}
-              onTogglePeak={onTogglePeak} 
-              onDeleteCompletion={onDeleteCompletion}
-              onAddPeak={() => onAddPeak(range.id)}
-              onEditPeak={(peakId) => onEditPeak(range.id, peakId)}
-              onDeletePeak={(peakId) => onDeletePeak(range.id, peakId)}
-              onDeleteRange={() => onDeleteRange(range.id)}
-              canManageCatalog={canManageCatalog}
-              canDeleteCompletion={canDeleteCompletion}
-              canViewCompletion={canViewCompletion}
-              participantNameMap={participantNameMap}
-            />
+            <React.Fragment key={range.id}>
+              <MountainRangeAccordion
+                range={range}
+                isOpen={expandedRangeId === range.id}
+                onToggle={() => setExpandedRangeId(current => (current === range.id ? null : range.id))}
+                onTogglePeak={onTogglePeak}
+                onDeleteCompletion={onDeleteCompletion}
+                onAddPeak={() => onAddPeak(range.id)}
+                onEditPeak={(peakId) => onEditPeak(range.id, peakId)}
+                onDeletePeak={(peakId) => onDeletePeak(range.id, peakId)}
+                onDeleteRange={() => onDeleteRange(range.id)}
+                canManageCatalog={canManageCatalog}
+                canDeleteCompletion={canDeleteCompletion}
+                canViewCompletion={canViewCompletion}
+                participantNameMap={participantNameMap}
+              />
+            </React.Fragment>
           ))
         ) : (
           <div className="py-10 text-center bg-white/5 rounded-2xl border border-dashed border-white/10">
