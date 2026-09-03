@@ -1,5 +1,7 @@
 ﻿import { MountainRange } from './types';
 
+import type { ActivityType } from './types';
+
 const RAW_SUPABASE_URL = String(import.meta.env.VITE_SUPABASE_URL ?? '').trim();
 const SUPABASE_PUBLIC_KEY = String(
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ??
@@ -61,6 +63,7 @@ interface SupabaseAuthSession {
 }
 
 const AUTH_SESSION_STORAGE_KEY = 'penitencia-supabase-auth-session';
+let shouldPersistAuthSession = true;
 
 export const buildGeneratedAvatarUrl = (_seed: string) => '';
 
@@ -77,7 +80,10 @@ const readStoredAuthSession = (): SupabaseAuthSession | null => {
   }
 
   try {
-    const rawSession = window.localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+    const persistentSession = window.localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+    const temporarySession = window.sessionStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+    shouldPersistAuthSession = Boolean(persistentSession) || !temporarySession;
+    const rawSession = persistentSession ?? temporarySession;
     if (!rawSession) {
       return null;
     }
@@ -95,7 +101,29 @@ const persistAuthSession = (session: SupabaseAuthSession) => {
     return;
   }
 
-  window.localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session));
+  const targetStorage = shouldPersistAuthSession ? window.localStorage : window.sessionStorage;
+  const otherStorage = shouldPersistAuthSession ? window.sessionStorage : window.localStorage;
+  targetStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session));
+  otherStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+};
+
+export const setSupabaseAuthPersistence = (persistAcrossRestarts: boolean) => {
+  shouldPersistAuthSession = persistAcrossRestarts;
+
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const existingSession =
+    window.localStorage.getItem(AUTH_SESSION_STORAGE_KEY) ??
+    window.sessionStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+  window.localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+  window.sessionStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+
+  if (existingSession) {
+    const targetStorage = persistAcrossRestarts ? window.localStorage : window.sessionStorage;
+    targetStorage.setItem(AUTH_SESSION_STORAGE_KEY, existingSession);
+  }
 };
 
 const parseAuthSessionRecord = (record: Record<string, unknown> | null): SupabaseAuthSession | null => {
@@ -136,6 +164,7 @@ const clearStoredAuthSession = () => {
   }
 
   window.localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+  window.sessionStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
 };
 
 const getMetadataString = (user: SupabaseAuthUser | null | undefined, key: string): string | null => {
@@ -269,10 +298,11 @@ const parseAuthResponseError = async (
 
     if (
       normalizedMessage.includes('idx_completions_individual_daily_checkin') ||
+      normalizedMessage.includes('duplicate check-in for participants') ||
       normalizedMessage.includes('duplicate key value violates unique constraint') ||
       normalizedMessage.includes('23505')
     ) {
-      return 'Voce ja tem um check-in neste local nessa data. Edite o check-in existente ou escolha outra data.';
+      return 'Ja existe check-in neste local nessa data para um dos participantes selecionados. Edite o check-in existente ou remova o participante duplicado.';
     }
 
     return message;
@@ -1084,6 +1114,7 @@ export const upsertCloudCompletion = async (payload: {
   completionId?: string;
   date: string;
   participants: string[];
+  activityType?: ActivityType;
   wikilocUrl?: string;
 }): Promise<
   | {
@@ -1092,6 +1123,7 @@ export const upsertCloudCompletion = async (payload: {
         id: string;
         date: string;
         participants: string[];
+        activityType?: ActivityType;
         ownerUserId?: string | null;
         wikilocUrl?: string;
       };
@@ -1111,7 +1143,7 @@ export const upsertCloudCompletion = async (payload: {
       return { ok: false, message: 'Sua sessÃ£o expirou. Entre novamente para salvar check-ins na nuvem.' };
     }
 
-    const requestInit: RequestInit = {
+    const buildRequestInit = async (includeActivityType: boolean): Promise<RequestInit> => ({
       method: 'POST',
       headers: await buildRequestHeaders(),
       body: JSON.stringify({
@@ -1119,12 +1151,14 @@ export const upsertCloudCompletion = async (payload: {
         p_completion_id: payload.completionId ?? null,
         p_completion_date: payload.date,
         p_participants: payload.participants,
+        ...(includeActivityType ? { p_activity_type: payload.activityType ?? 'bate_volta' } : {}),
         p_wikiloc_url: payload.wikilocUrl ?? null,
       }),
-    };
+    });
 
     const maxAttempts = 3;
     let response: Response | null = null;
+    let requestInit = await buildRequestInit(true);
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         try {
@@ -1152,6 +1186,15 @@ export const upsertCloudCompletion = async (payload: {
       return { ok: false, message: 'Falha de conexÃƒÂ£o ao salvar a conquista.' };
     }
 
+    if (!response.ok && response.status === 404) {
+      requestInit = await buildRequestInit(false);
+      try {
+        response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/upsert_completion`, requestInit);
+      } catch {
+        response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_completion`, requestInit);
+      }
+    }
+
     if (!response.ok) {
       return {
         ok: false,
@@ -1172,6 +1215,9 @@ export const upsertCloudCompletion = async (payload: {
         participants: Array.isArray(record.participants)
           ? record.participants.filter((value): value is string => typeof value === 'string')
           : [],
+        activityType: typeof record.activityType === 'string'
+          ? record.activityType as ActivityType
+          : payload.activityType,
         ownerUserId: typeof record.ownerUserId === 'string' ? record.ownerUserId : null,
         wikilocUrl: typeof record.wikilocUrl === 'string' ? record.wikilocUrl : undefined,
       },

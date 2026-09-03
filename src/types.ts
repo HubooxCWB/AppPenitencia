@@ -44,8 +44,10 @@ export interface PeakCompletion {
   participants: string[];
   ownerUserId?: string | null;
   wikilocUrl?: string;
+  activityType?: ActivityType;
 }
 
+export type ActivityType = 'bate_volta' | 'ataque' | 'trekking' | 'travessia' | 'acampamento';
 export type PeakCategory = 'PEAK' | 'WATERFALL';
 export type LocalType = 'pico' | 'morro' | 'cachoeira' | 'trilha' | 'ilha';
 export type SupportedState = 'Paraná';

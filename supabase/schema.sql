@@ -84,6 +84,7 @@ create table if not exists public.completions (
   owner_user_id uuid references auth.users(id) on delete set null,
   completion_date date not null,
   completion_date_label text not null,
+  activity_type text not null default 'bate_volta',
   wikiloc_url text,
   sort_order integer not null default 0,
   created_at timestamptz not null default now(),
@@ -92,6 +93,19 @@ create table if not exists public.completions (
 
 alter table public.completions
   add column if not exists owner_user_id uuid;
+
+alter table public.completions
+  add column if not exists activity_type text not null default 'bate_volta';
+
+do $$
+begin
+  alter table public.completions
+    drop constraint if exists completions_activity_type_check;
+
+  alter table public.completions
+    add constraint completions_activity_type_check
+    check (activity_type in ('bate_volta', 'ataque', 'trekking', 'travessia', 'acampamento'));
+end $$;
 
 do $$
 begin
@@ -320,6 +334,7 @@ drop function if exists public.upsert_completion(text, text);
 drop function if exists public.upsert_completion(text, text, text);
 drop function if exists public.upsert_completion(text, text, text, jsonb);
 drop function if exists public.upsert_completion(text, text, text, jsonb, text);
+drop function if exists public.upsert_completion(text, text, text, jsonb, text, text);
 drop function if exists public.delete_completion(text);
 
 create or replace function public.upsert_app_user(
@@ -705,6 +720,7 @@ begin
           owner_user_id,
           completion_date,
           completion_date_label,
+          activity_type,
           wikiloc_url,
           sort_order
         )
@@ -718,6 +734,12 @@ begin
           end,
           v_completion_date,
           v_completion_label,
+          case
+            when replace(lower(coalesce(nullif(v_completion_item->>'activityType', ''), nullif(v_completion_item->>'activity_type', ''), 'bate_volta')), '-', '_')
+              in ('bate_volta', 'ataque', 'trekking', 'travessia', 'acampamento')
+              then replace(lower(coalesce(nullif(v_completion_item->>'activityType', ''), nullif(v_completion_item->>'activity_type', ''), 'bate_volta')), '-', '_')
+            else 'bate_volta'
+          end,
           nullif(v_completion_item->>'wikilocUrl', ''),
           v_completion_order
         );
@@ -747,6 +769,7 @@ create or replace function public.upsert_completion(
   p_completion_id text default null,
   p_completion_date text default null,
   p_participants jsonb default '[]'::jsonb,
+  p_activity_type text default 'bate_volta',
   p_wikiloc_url text default null
 )
 returns jsonb
@@ -761,6 +784,7 @@ declare
   v_peak_exists boolean;
   v_existing public.completions;
   v_current_participant_name text;
+  v_duplicate_participants text;
 begin
   if auth.uid() is null then
     raise exception 'forbidden';
@@ -836,12 +860,38 @@ begin
     raise exception 'participants must be a JSON array';
   end if;
 
+  with payload_participants as (
+    select distinct btrim(participant_value) as participant_name
+    from jsonb_array_elements_text(coalesce(p_participants, '[]'::jsonb)) as participant_items(participant_value)
+    where btrim(participant_value) <> ''
+    union
+    select v_current_participant_name
+  )
+  select string_agg(pp.participant_name, ', ' order by pp.participant_name)
+  into v_duplicate_participants
+  from payload_participants pp
+  where exists (
+    select 1
+    from public.completions c
+    join public.completion_participants cp
+      on cp.completion_id = c.id
+    where c.peak_id = p_peak_id
+      and c.completion_date = v_completion_date
+      and c.id <> v_completion_id
+      and lower(cp.participant_name) = lower(pp.participant_name)
+  );
+
+  if v_duplicate_participants is not null then
+    raise exception 'duplicate check-in for participants: %', v_duplicate_participants;
+  end if;
+
   insert into public.completions (
     id,
     peak_id,
     owner_user_id,
     completion_date,
     completion_date_label,
+    activity_type,
     wikiloc_url
   )
   values (
@@ -850,6 +900,10 @@ begin
     coalesce(v_existing.owner_user_id, auth.uid()),
     v_completion_date,
     v_completion_label,
+    case
+      when p_activity_type in ('bate_volta', 'ataque', 'trekking', 'travessia', 'acampamento') then p_activity_type
+      else 'bate_volta'
+    end,
     nullif(trim(coalesce(p_wikiloc_url, '')), '')
   )
   on conflict (id)
@@ -857,6 +911,7 @@ begin
     peak_id = excluded.peak_id,
     completion_date = excluded.completion_date,
     completion_date_label = excluded.completion_date_label,
+    activity_type = excluded.activity_type,
     wikiloc_url = excluded.wikiloc_url,
     updated_at = now();
 
@@ -864,7 +919,20 @@ begin
   where completion_id = v_completion_id;
 
   insert into public.completion_participants (completion_id, participant_name, sort_order)
-  values (v_completion_id, v_current_participant_name, 1)
+  select v_completion_id, participant_name, row_number() over (order by sort_order, participant_name)
+  from (
+    select distinct on (lower(participant_name))
+      participant_name,
+      sort_order
+    from (
+      select v_current_participant_name as participant_name, 0 as sort_order
+      union all
+      select btrim(participant_value) as participant_name, participant_order::integer as sort_order
+      from jsonb_array_elements_text(coalesce(p_participants, '[]'::jsonb)) with ordinality as participant_items(participant_value, participant_order)
+      where btrim(participant_value) <> ''
+    ) participant_payload
+    order by lower(participant_name), sort_order
+  ) normalized_participants
   on conflict (completion_id, participant_name)
   do update set sort_order = excluded.sort_order;
 
@@ -880,6 +948,10 @@ begin
       '[]'::jsonb
     ),
     'ownerUserId', coalesce(v_existing.owner_user_id, auth.uid())::text,
+    'activityType', case
+      when p_activity_type in ('bate_volta', 'ataque', 'trekking', 'travessia', 'acampamento') then p_activity_type
+      else 'bate_volta'
+    end,
     'wikilocUrl', nullif(trim(coalesce(p_wikiloc_url, '')), '')
   );
 end;
@@ -949,6 +1021,7 @@ with completion_json as (
           'id', c.id,
           'date', c.completion_date_label,
           'ownerUserId', c.owner_user_id,
+          'activityType', c.activity_type,
           'participants', coalesce(
             (
               select jsonb_agg(cp.participant_name order by cp.sort_order, cp.participant_name)
@@ -1022,7 +1095,7 @@ grant execute on function public.get_snapshot() to authenticated;
 grant execute on function public.get_my_app_user() to authenticated;
 grant execute on function public.replace_snapshot(jsonb) to authenticated;
 grant execute on function public.upsert_app_user(uuid, text, text, text, text) to authenticated;
-grant execute on function public.upsert_completion(text, text, text, jsonb, text) to authenticated;
+grant execute on function public.upsert_completion(text, text, text, jsonb, text, text) to authenticated;
 grant execute on function public.delete_completion(text) to authenticated;
 grant execute on function public.list_app_users() to authenticated;
 grant execute on function public.list_participant_directory() to authenticated;
