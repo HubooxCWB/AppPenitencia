@@ -2558,9 +2558,9 @@ export default function App() {
   };
 
   return (
-    <div className="h-[100dvh] overflow-y-auto overflow-x-clip overscroll-y-contain bg-background-dark text-slate-100 font-sans w-full relative pt-[env(safe-area-inset-top)]">
+    <div className="flex h-[100svh] min-h-[100svh] w-full flex-col overflow-hidden bg-background-dark pt-[env(safe-area-inset-top)] font-sans text-slate-100">
       {/* Main Content */}
-      <main className="mx-auto w-full max-w-5xl px-0 pb-[calc(6rem+env(safe-area-inset-bottom))]">
+      <main className="mx-auto min-h-0 w-full max-w-5xl flex-1 overflow-y-auto overflow-x-hidden px-0 pb-4">
         <AnimatePresence mode="wait">
           <motion.div
             key={currentScreen}
@@ -2670,7 +2670,7 @@ export default function App() {
       )}
 
       {/* Bottom Navigation */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-black/95 shadow-[0_-10px_30px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+      <nav className="z-40 shrink-0 border-t border-white/10 bg-black/95 shadow-[0_-10px_30px_rgba(0,0,0,0.45)] backdrop-blur-xl">
         <div className="mx-auto w-full max-w-5xl px-3 pb-[env(safe-area-inset-bottom)] sm:px-6">
           <div className="flex min-h-16 items-center justify-between px-2 py-1 sm:px-6">
             <NavButton 
