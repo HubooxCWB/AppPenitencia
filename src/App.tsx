@@ -2537,9 +2537,9 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-[100svh] min-h-[100svh] w-full flex-col overflow-hidden bg-background-dark pt-[env(safe-area-inset-top)] font-sans text-slate-100">
+    <div className="flex h-[100dvh] min-h-[100svh] w-full flex-col overflow-hidden bg-background-dark pt-[env(safe-area-inset-top)] font-sans text-slate-100">
       {/* Main Content */}
-      <main className="mx-auto min-h-0 w-full max-w-5xl flex-1 overflow-y-auto overflow-x-hidden px-0 pb-4">
+      <main className="mx-auto min-h-0 w-full max-w-5xl flex-1 overflow-y-auto overflow-x-hidden px-0 pb-20">
         <AnimatePresence mode="wait">
           <motion.div
             key={currentScreen}
@@ -2661,7 +2661,7 @@ export default function App() {
       <button
         type="button"
         onClick={() => setIsQuickCheckinOpen(true)}
-        className="fixed bottom-[calc(5.25rem+env(safe-area-inset-bottom))] right-4 z-50 flex h-12 items-center gap-2 rounded-full border border-primary/30 bg-primary px-4 text-sm font-black text-background-dark shadow-lg shadow-primary/20 transition-transform active:scale-95 sm:right-6"
+        className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] right-4 z-50 flex h-12 items-center gap-2 rounded-full border border-primary/30 bg-primary px-4 text-sm font-black text-background-dark shadow-lg shadow-primary/20 transition-transform active:scale-95 sm:right-6"
       >
         <CheckCircle2 size={18} />
         Check-in
@@ -2670,7 +2670,7 @@ export default function App() {
       {currentScreen === 'SERRAS' && isAdminUser && (
         <button 
           onClick={() => setIsAddingRange(true)}
-          className="fixed bottom-[calc(5.25rem+env(safe-area-inset-bottom))] left-4 z-50 size-12 bg-primary/10 text-primary rounded-full flex items-center justify-center border border-primary/30 shadow-lg shadow-primary/10 hover:scale-105 transition-transform active:scale-95 sm:left-6"
+          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] left-4 z-50 size-12 bg-primary/10 text-primary rounded-full flex items-center justify-center border border-primary/30 shadow-lg shadow-primary/10 hover:scale-105 transition-transform active:scale-95 sm:left-6"
         >
           <Plus size={24} strokeWidth={3} />
         </button>
