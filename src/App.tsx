@@ -6416,7 +6416,7 @@ function RankingScreen({
         </div>
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-            {isAllTimeRanking ? 'Visão geral histórica' : `Visão mensal oficial: ${rankingPeriodLabel}`}
+            {isAllTimeRanking ? 'Visão geral histórica' : `Visão mensal: ${rankingPeriodLabel}`}
           </p>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <div className="flex h-10 overflow-hidden rounded-xl border border-primary/20 bg-primary/5 p-1">
@@ -6429,7 +6429,7 @@ function RankingScreen({
                     : 'text-primary hover:bg-primary/10'
                 }`}
               >
-                Mensal oficial
+                Mensal
               </button>
               <button
                 type="button"
