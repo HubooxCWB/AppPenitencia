@@ -5814,7 +5814,7 @@ function RankingScreen({
   };
 
   const [rankingMode, setRankingMode] = useState<RankingMode>('DESTAQUES');
-  const [rankingPeriod] = useState<RankingPeriod>('MONTH');
+  const [rankingPeriod, setRankingPeriod] = useState<RankingPeriod>('MONTH');
   const [selectedRankingMonth, setSelectedRankingMonth] = useState(() => {
     const today = new Date();
     return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
@@ -5846,6 +5846,7 @@ function RankingScreen({
     month: 'long',
     year: 'numeric',
   });
+  const isAllTimeRanking = rankingPeriod === 'ALL_TIME';
   const rankingYearOptions = Array.from(
     new Set([
       currentYear,
@@ -6272,14 +6273,14 @@ function RankingScreen({
           ? leadersByCheckins
           : leadersByDestaques;
   const rankingTitle = rankingMode === 'PICOS'
-    ? '🏆 Trilha de Picos'
+    ? (isAllTimeRanking ? '🏆 Picos no Geral' : '🏆 Trilha de Picos')
     : rankingMode === 'ALTITUDE'
-      ? 'Maior Altitude do Mês'
+      ? (isAllTimeRanking ? 'Maior Altitude Geral' : 'Maior Altitude do Mês')
       : rankingMode === 'SERRAS'
-        ? '🧭 Regiões Conquistadas'
+        ? (isAllTimeRanking ? '🧭 Regiões no Geral' : '🧭 Regiões Conquistadas')
         : rankingMode === 'CHECKINS'
-          ? '✅ Trilha de Check-ins'
-          : 'Destaques do Mês';
+          ? (isAllTimeRanking ? '✅ Check-ins no Geral' : '✅ Trilha de Check-ins')
+          : (isAllTimeRanking ? 'Destaques Gerais' : 'Destaques do Mês');
   const rankingPeriodLabel = rankingPeriod === 'MONTH' ? rankingMonthLabel : 'Todo tempo';
 
   const top1 = leaders[0];
@@ -6414,8 +6415,34 @@ function RankingScreen({
           </button>
         </div>
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Visão mensal: {rankingPeriodLabel}</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+            {isAllTimeRanking ? 'Visão geral histórica' : `Visão mensal oficial: ${rankingPeriodLabel}`}
+          </p>
           <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex h-10 overflow-hidden rounded-xl border border-primary/20 bg-primary/5 p-1">
+              <button
+                type="button"
+                onClick={() => setRankingPeriod('MONTH')}
+                className={`rounded-lg px-3 text-[10px] font-black uppercase tracking-wider transition-colors ${
+                  rankingPeriod === 'MONTH'
+                    ? 'bg-primary text-background-dark'
+                    : 'text-primary hover:bg-primary/10'
+                }`}
+              >
+                Mensal oficial
+              </button>
+              <button
+                type="button"
+                onClick={() => setRankingPeriod('ALL_TIME')}
+                className={`rounded-lg px-3 text-[10px] font-black uppercase tracking-wider transition-colors ${
+                  rankingPeriod === 'ALL_TIME'
+                    ? 'bg-primary text-background-dark'
+                    : 'text-primary hover:bg-primary/10'
+                }`}
+              >
+                Geral
+              </button>
+            </div>
             {rankingPeriod === 'MONTH' && (
               <div className="flex h-10 items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3">
                 <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400" htmlFor="ranking-month">
@@ -6456,7 +6483,7 @@ function RankingScreen({
               </div>
             )}
             <p className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-primary">
-              Renova todo mês
+              {isAllTimeRanking ? 'Histórico total' : 'Renova todo mês'}
             </p>
           </div>
         </div>
