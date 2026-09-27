@@ -1380,6 +1380,28 @@ export default function App() {
       return;
     }
 
+    const updateAppViewportHeight = () => {
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      document.documentElement.style.setProperty('--app-height', `${viewportHeight}px`);
+    };
+
+    updateAppViewportHeight();
+    window.addEventListener('resize', updateAppViewportHeight);
+    window.addEventListener('orientationchange', updateAppViewportHeight);
+    window.visualViewport?.addEventListener('resize', updateAppViewportHeight);
+
+    return () => {
+      window.removeEventListener('resize', updateAppViewportHeight);
+      window.removeEventListener('orientationchange', updateAppViewportHeight);
+      window.visualViewport?.removeEventListener('resize', updateAppViewportHeight);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
     if (user) {
       const targetStorage = persistLogin ? window.localStorage : window.sessionStorage;
       const otherStorage = persistLogin ? window.sessionStorage : window.localStorage;
@@ -2537,7 +2559,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-[100dvh] min-h-[100svh] w-full flex-col overflow-hidden bg-background-dark pt-[env(safe-area-inset-top)] font-sans text-slate-100">
+    <div className="flex h-[var(--app-height,100dvh)] min-h-[var(--app-height,100dvh)] w-full flex-col overflow-hidden bg-background-dark pt-[env(safe-area-inset-top)] font-sans text-slate-100">
       {/* Main Content */}
       <main className="mx-auto min-h-0 w-full max-w-5xl flex-1 overflow-y-auto overflow-x-hidden px-0 pb-20">
         <AnimatePresence mode="wait">
