@@ -2593,6 +2593,7 @@ export default function App() {
           <CompletionModal
             peak={isCompletingPeak.peak}
             initialData={isCompletingPeak.initialData}
+            isEditing={Boolean(isCompletingPeak.completionId)}
             isReadOnly={isCompletingPeak.isReadOnly}
             isSaving={isSavingCompletion}
             participantNameMap={participantNameMap}
@@ -2605,9 +2606,20 @@ export default function App() {
           <QuickCheckinModal
             mountainRanges={mountainRanges}
             onClose={() => setIsQuickCheckinOpen(false)}
-            onSelect={(rangeId, peakId) => {
+            onSelect={(rangeId, peakId, date) => {
+              const range = mountainRanges.find(currentRange => currentRange.id === rangeId);
+              const peak = range?.peaks.find(currentPeak => currentPeak.id === peakId);
               setIsQuickCheckinOpen(false);
-              togglePeak(rangeId, peakId);
+              if (peak) {
+                setIsCompletingPeak({
+                  rangeId,
+                  peak,
+                  initialData: {
+                    date,
+                    participants: [],
+                  },
+                });
+              }
             }}
           />
         )}
@@ -2902,6 +2914,7 @@ function CloudSyncErrorScreen({
 function CompletionModal({
   peak,
   initialData,
+  isEditing = false,
   isReadOnly = false,
   isSaving = false,
   participantNameMap,
@@ -2911,6 +2924,7 @@ function CompletionModal({
 }: { 
   peak: Peak, 
   initialData?: { date: string, participants: string[], wikilocUrl?: string, activityType?: ActivityType },
+  isEditing?: boolean,
   isReadOnly?: boolean,
   isSaving?: boolean,
   participantNameMap: Map<string, string>,
@@ -2974,7 +2988,7 @@ function CompletionModal({
       >
         <div className="flex justify-between items-center">
           <h2 className="text-xl font-bold">
-            {isReadOnly ? 'Detalhes de' : initialData ? 'Editar' : 'Concluir'} {peak.name}
+            {isReadOnly ? 'Detalhes de' : isEditing ? 'Editar' : 'Concluir'} {peak.name}
           </h2>
           <button onClick={onClose} disabled={isSaving} className="text-slate-500 hover:text-white disabled:opacity-40">
             <X size={24} />
@@ -3084,12 +3098,84 @@ function CompletionModal({
               })}
               className="flex-1 h-12 rounded-2xl bg-primary text-background-dark font-bold text-base sm:text-sm disabled:opacity-60"
             >
-              {isSaving ? 'Salvando...' : initialData ? 'Salvar' : 'Confirmar'}
+              {isSaving ? 'Salvando...' : isEditing ? 'Salvar' : 'Confirmar'}
             </button>
           )}
         </div>
       </motion.div>
     </motion.div>
+  );
+}
+
+function ChoiceSelector({
+  label,
+  value,
+  selectedLabel,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  selectedLabel: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <div className="space-y-1.5">
+      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+        {label}
+      </label>
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setIsOpen(current => !current)}
+          className={`flex min-h-12 w-full items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-left text-sm font-bold transition-colors ${
+            isOpen
+              ? 'border-primary bg-primary/10 text-white'
+              : 'border-primary/20 bg-primary/5 text-white hover:bg-primary/10'
+          }`}
+          aria-expanded={isOpen}
+        >
+          <span className="min-w-0 flex-1 truncate">{selectedLabel}</span>
+          <ChevronDown size={18} className={`shrink-0 text-primary transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        </button>
+
+        <AnimatePresence>
+          {isOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-[120] max-h-56 overflow-y-auto rounded-2xl border border-primary/25 bg-[#031303] p-1 shadow-2xl shadow-black/50"
+            >
+              {options.map(option => {
+                const isSelected = option.value === value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => {
+                      onChange(option.value);
+                      setIsOpen(false);
+                    }}
+                    className={`flex min-h-10 w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm font-bold transition-colors ${
+                      isSelected
+                        ? 'bg-primary text-background-dark'
+                        : 'text-slate-100 hover:bg-primary/10 hover:text-primary'
+                    }`}
+                  >
+                    <span className="min-w-0 truncate">{option.label}</span>
+                    {isSelected && <CheckCircle2 size={14} className="shrink-0" />}
+                  </button>
+                );
+              })}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </div>
   );
 }
 
@@ -3100,12 +3186,26 @@ function QuickCheckinModal({
 }: {
   mountainRanges: MountainRange[];
   onClose: () => void;
-  onSelect: (rangeId: string, peakId: string) => void;
+  onSelect: (rangeId: string, peakId: string, date: string) => void;
 }) {
+  const getTodayLocalISODate = () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const formatISOToBRDate = (isoDate: string) => {
+    const [year, month, day] = isoDate.split('-');
+    return `${day}/${month}/${year}`;
+  };
+
   const rangesWithPeaks = mountainRanges.filter(range => range.peaks.length > 0);
   const [rangeId, setRangeId] = useState(rangesWithPeaks[0]?.id ?? '');
   const selectedRange = rangesWithPeaks.find(range => range.id === rangeId) ?? rangesWithPeaks[0];
   const [peakId, setPeakId] = useState(selectedRange?.peaks[0]?.id ?? '');
+  const [date, setDate] = useState(getTodayLocalISODate);
 
   useEffect(() => {
     if (!selectedRange) {
@@ -3119,7 +3219,7 @@ function QuickCheckinModal({
   }, [peakId, selectedRange]);
 
   const selectedPeak = selectedRange?.peaks.find(peak => peak.id === peakId);
-  const canContinue = Boolean(selectedRange && selectedPeak);
+  const canContinue = Boolean(selectedRange && selectedPeak && date);
 
   return (
     <motion.div
@@ -3151,35 +3251,43 @@ function QuickCheckinModal({
         ) : (
           <div className="space-y-4">
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-                Região / Serra
-              </label>
-              <select
+              <ChoiceSelector
+                label="Região / Serra"
                 value={selectedRange?.id ?? ''}
-                onChange={(event) => setRangeId(event.target.value)}
-                className="w-full rounded-2xl border border-primary/20 bg-primary/5 px-4 h-12 text-sm font-bold text-white focus:border-primary focus:outline-none"
-              >
-                {rangesWithPeaks.map(range => (
-                  <option key={range.id} value={range.id}>{range.name}</option>
-                ))}
-              </select>
+                selectedLabel={selectedRange?.name ?? 'Selecione a região'}
+                options={rangesWithPeaks.map(range => ({
+                  value: range.id,
+                  label: range.name,
+                }))}
+                onChange={setRangeId}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <ChoiceSelector
+                label="Local"
+                value={selectedPeak?.id ?? ''}
+                selectedLabel={selectedPeak
+                  ? `${selectedPeak.name} - ${getLocalTypeLabel(resolvePeakLocalType(selectedPeak))}`
+                  : 'Selecione o local'}
+                options={(selectedRange?.peaks ?? []).map(peak => ({
+                  value: peak.id,
+                  label: `${peak.name} - ${getLocalTypeLabel(resolvePeakLocalType(peak))}`,
+                }))}
+                onChange={setPeakId}
+              />
             </div>
 
             <div className="space-y-1.5">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-                Local
+                Data do check-in
               </label>
-              <select
-                value={selectedPeak?.id ?? ''}
-                onChange={(event) => setPeakId(event.target.value)}
-                className="w-full rounded-2xl border border-primary/20 bg-primary/5 px-4 h-12 text-sm font-bold text-white focus:border-primary focus:outline-none"
-              >
-                {(selectedRange?.peaks ?? []).map(peak => (
-                  <option key={peak.id} value={peak.id}>
-                    {peak.name} - {getLocalTypeLabel(resolvePeakLocalType(peak))}
-                  </option>
-                ))}
-              </select>
+              <input
+                type="date"
+                value={date}
+                onChange={(event) => setDate(event.target.value)}
+                className="h-12 w-full rounded-2xl border border-primary/20 bg-primary/5 px-4 text-base font-bold text-white focus:border-primary focus:outline-none sm:text-sm"
+              />
             </div>
           </div>
         )}
@@ -3197,7 +3305,7 @@ function QuickCheckinModal({
             disabled={!canContinue}
             onClick={() => {
               if (selectedRange && selectedPeak) {
-                onSelect(selectedRange.id, selectedPeak.id);
+                onSelect(selectedRange.id, selectedPeak.id, formatISOToBRDate(date));
               }
             }}
             className="flex-1 h-12 rounded-2xl bg-primary text-background-dark font-bold text-base sm:text-sm disabled:opacity-50"
