@@ -330,7 +330,7 @@ const parseAuthResponseError = async (
 
 const isSessionExpired = (session: SupabaseAuthSession): boolean => {
   if (typeof session.expires_at !== 'number') {
-    return false;
+    return Boolean(session.refresh_token);
   }
 
   const expiresAtMs = session.expires_at * 1000;
@@ -565,13 +565,7 @@ const refreshAuthSession = async (refreshToken: string): Promise<SupabaseAuthSes
     return null;
   }
 
-  return {
-    access_token: typeof record.access_token === 'string' ? record.access_token : undefined,
-    refresh_token: typeof record.refresh_token === 'string' ? record.refresh_token : undefined,
-    expires_at: typeof record.expires_at === 'number' ? record.expires_at : undefined,
-    expires_in: typeof record.expires_in === 'number' ? record.expires_in : undefined,
-    user: toSupabaseAuthUser(record.user),
-  };
+  return parseAuthSessionRecord(record);
 };
 
 const getValidStoredAuthSession = async (): Promise<SupabaseAuthSession | null> => {
@@ -1140,7 +1134,7 @@ export const upsertCloudCompletion = async (payload: {
   try {
     const validSession = await getValidStoredAuthSession();
     if (!validSession?.access_token) {
-      return { ok: false, message: 'Sua sessÃ£o expirou. Entre novamente para salvar check-ins na nuvem.' };
+      return { ok: false, message: 'Nao foi possivel renovar sua sessao automaticamente. Entre novamente para sincronizar este check-in na nuvem.' };
     }
 
     const buildRequestInit = async (includeActivityType: boolean): Promise<RequestInit> => ({
@@ -1184,6 +1178,20 @@ export const upsertCloudCompletion = async (payload: {
 
     if (!response) {
       return { ok: false, message: 'Falha de conexÃƒÂ£o ao salvar a conquista.' };
+    }
+
+    if (!response.ok && (response.status === 401 || response.status === 403)) {
+      const refreshToken = readStoredAuthSession()?.refresh_token;
+      const refreshedSession = refreshToken ? await refreshAuthSession(refreshToken) : null;
+      if (refreshedSession?.access_token) {
+        persistAuthSession(refreshedSession);
+        requestInit = await buildRequestInit(true);
+        try {
+          response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/upsert_completion`, requestInit);
+        } catch {
+          response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_completion`, requestInit);
+        }
+      }
     }
 
     if (!response.ok && response.status === 404) {

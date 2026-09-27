@@ -1363,6 +1363,7 @@ export default function App() {
   const [isAddingRange, setIsAddingRange] = useState(false);
   const [isAddingPeak, setIsAddingPeak] = useState<{ rangeId: string } | null>(null);
   const [isEditingPeak, setIsEditingPeak] = useState<{ rangeId: string, peak: Peak } | null>(null);
+  const [isQuickCheckinOpen, setIsQuickCheckinOpen] = useState(false);
   const [isCompletingPeak, setIsCompletingPeak] = useState<{ 
     rangeId: string, 
     peak: Peak, 
@@ -1959,10 +1960,7 @@ export default function App() {
     }
 
     const currentUserDisplayName = resolveParticipantDisplayName(user.name, participantNameMap) || user.name;
-    const participantsToPersist = sanitizeParticipants(
-      [currentUserDisplayName, ...data.participants],
-      participantNameMap,
-    );
+    const participantsToPersist = sanitizeParticipants([currentUserDisplayName], participantNameMap);
     const targetPeak = mountainRanges
       .find(range => range.id === rangeId)
       ?.peaks.find(peak => peak.id === peakId);
@@ -2412,26 +2410,6 @@ export default function App() {
     setIsEditingPeak(null);
   };
 
-  const participantSuggestions: string[] = Array.from(
-    new Set<string>(
-      [
-        ...registeredUsers
-          .filter(registeredUser => registeredUser.role !== 'ADMIN')
-          .map(registeredUser => registeredUser.display_name),
-        ...mountainRanges.flatMap(range =>
-          range.peaks.flatMap(peak =>
-            peak.completions.flatMap(completion =>
-              completion.participants.map(participant =>
-                resolveParticipantDisplayName(participant, participantNameMap),
-              ),
-            ),
-          ),
-        ),
-      ],
-    ),
-  )
-    .filter(name => participantNameMap.has(normalizeText(name)))
-    .sort((a, b) => a.localeCompare(b, 'pt-BR'));
   const pendingCompletionSyncCount = isSavingCompletion ? 1 : 0;
 
   if (isAuthBootstrapping) {
@@ -2528,6 +2506,7 @@ export default function App() {
             user={user}
             mountainRanges={mountainRanges}
             participantNameMap={participantNameMap}
+            onEditCheckin={togglePeak}
             onBack={() => setCurrentScreen('HOME')}
           />
         );
@@ -2616,13 +2595,20 @@ export default function App() {
             initialData={isCompletingPeak.initialData}
             isReadOnly={isCompletingPeak.isReadOnly}
             isSaving={isSavingCompletion}
-            participantSuggestions={participantSuggestions}
             participantNameMap={participantNameMap}
-            isLoadingParticipantSuggestions={isLoadingRegisteredUsers}
             currentUser={user}
-            isAdmin={isAdminUser}
             onClose={() => setIsCompletingPeak(null)}
             onSave={(data) => savePeakCompletion(isCompletingPeak.rangeId, isCompletingPeak.peak.id, data, isCompletingPeak.completionId)}
+          />
+        )}
+        {isQuickCheckinOpen && (
+          <QuickCheckinModal
+            mountainRanges={mountainRanges}
+            onClose={() => setIsQuickCheckinOpen(false)}
+            onSelect={(rangeId, peakId) => {
+              setIsQuickCheckinOpen(false);
+              togglePeak(rangeId, peakId);
+            }}
           />
         )}
       </AnimatePresence>
@@ -2660,12 +2646,21 @@ export default function App() {
       )}
 
       {/* Floating Action Button */}
+      <button
+        type="button"
+        onClick={() => setIsQuickCheckinOpen(true)}
+        className="fixed bottom-[calc(5.25rem+env(safe-area-inset-bottom))] right-4 z-50 flex h-12 items-center gap-2 rounded-full border border-primary/30 bg-primary px-4 text-sm font-black text-background-dark shadow-lg shadow-primary/20 transition-transform active:scale-95 sm:right-6"
+      >
+        <CheckCircle2 size={18} />
+        Check-in
+      </button>
+
       {currentScreen === 'SERRAS' && isAdminUser && (
         <button 
           onClick={() => setIsAddingRange(true)}
-          className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 z-50 size-14 bg-primary text-background-dark rounded-full flex items-center justify-center shadow-lg shadow-primary/20 hover:scale-105 transition-transform active:scale-95 sm:right-6"
+          className="fixed bottom-[calc(5.25rem+env(safe-area-inset-bottom))] left-4 z-50 size-12 bg-primary/10 text-primary rounded-full flex items-center justify-center border border-primary/30 shadow-lg shadow-primary/10 hover:scale-105 transition-transform active:scale-95 sm:left-6"
         >
-          <Plus size={32} strokeWidth={3} />
+          <Plus size={24} strokeWidth={3} />
         </button>
       )}
 
@@ -2723,9 +2718,9 @@ function ReleaseNotesModal({ onClose }: { onClose: () => void }) {
       icon: <Route size={18} />,
     },
     {
-      title: 'Quem foi junto',
-      description: 'Adicione companheiros da plataforma e evite registros repetidos no mesmo local e data.',
-      icon: <Users size={18} />,
+      title: 'Check-in mais rapido',
+      description: 'Use o botao flutuante para escolher a serra, o local e registrar sem procurar na lista.',
+      icon: <CheckCircle2 size={18} />,
     },
   ];
 
@@ -2909,11 +2904,8 @@ function CompletionModal({
   initialData,
   isReadOnly = false,
   isSaving = false,
-  participantSuggestions,
   participantNameMap,
-  isLoadingParticipantSuggestions,
   currentUser,
-  isAdmin,
   onClose,
   onSave,
 }: { 
@@ -2921,11 +2913,8 @@ function CompletionModal({
   initialData?: { date: string, participants: string[], wikilocUrl?: string, activityType?: ActivityType },
   isReadOnly?: boolean,
   isSaving?: boolean,
-  participantSuggestions: string[],
   participantNameMap: Map<string, string>,
-  isLoadingParticipantSuggestions: boolean,
   currentUser: User,
-  isAdmin: boolean,
   onClose: () => void, 
   onSave: (data: { date: string, participants: string[], wikilocUrl?: string, activityType: ActivityType }) => void 
 }) {
@@ -2949,34 +2938,13 @@ function CompletionModal({
 
   const [date, setDate] = useState(initialData ? parseBRDateToISO(initialData.date) : getTodayLocalISODate());
   const currentUserDisplayName = resolveParticipantDisplayName(currentUser.name, participantNameMap) || currentUser.name;
-  const [participants, setParticipants] = useState(() =>
-    isReadOnly
-      ? sanitizeParticipants(initialData?.participants ?? [], participantNameMap)
-      : sanitizeParticipants(initialData?.participants?.length ? initialData.participants : [currentUserDisplayName], participantNameMap),
+  const visibleParticipants = sanitizeParticipants(
+    isReadOnly && initialData?.participants?.length ? initialData.participants : [currentUserDisplayName],
+    participantNameMap,
   );
   const formDisabled = isReadOnly || isSaving;
   const [activityType, setActivityType] = useState<ActivityType>(resolveActivityType(initialData?.activityType));
   const [wikilocUrl, setWikilocUrl] = useState(initialData?.wikilocUrl || '');
-  const participantKeys = new Set(participants.map(participant => normalizeText(participant)));
-  const availableParticipants = sanitizeParticipants(participantSuggestions, participantNameMap)
-    .filter(participant => normalizeText(participant) !== normalizeText(currentUserDisplayName))
-    .filter(participant => !participantKeys.has(normalizeText(participant)));
-
-  const addParticipant = (participant: string) => {
-    if (formDisabled) {
-      return;
-    }
-
-    setParticipants(current => sanitizeParticipants([...current, participant], participantNameMap));
-  };
-
-  const removeParticipant = (participant: string) => {
-    if (formDisabled || normalizeText(participant) === normalizeText(currentUserDisplayName)) {
-      return;
-    }
-
-    setParticipants(current => current.filter(item => normalizeText(item) !== normalizeText(participant)));
-  };
 
   useEffect(() => {
     const previousBodyOverflow = document.body.style.overflow;
@@ -3033,53 +3001,15 @@ function CompletionModal({
           {/* Participant */}
           <div className="space-y-1.5">
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
-              <UserIcon size={12} /> {isReadOnly ? 'Participantes' : 'Quem foi junto'}
+              <UserIcon size={12} /> {isReadOnly ? 'Participante' : 'Check-in individual'}
             </label>
             <div className="flex flex-wrap gap-2 mt-2">
-              {participants.map(p => (
+              {visibleParticipants.map(p => (
                 <span key={p} className="bg-primary/10 text-primary text-[10px] font-bold px-3 py-1.5 rounded-full border border-primary/20 flex items-center gap-1.5">
                   {p}
-                  {!isReadOnly && normalizeText(p) !== normalizeText(currentUserDisplayName) && (
-                    <button
-                      type="button"
-                      onClick={() => removeParticipant(p)}
-                      disabled={formDisabled}
-                      className="text-primary/70 hover:text-primary disabled:opacity-40"
-                      aria-label={`Remover ${p}`}
-                      title="Remover participante"
-                    >
-                      <X size={12} />
-                    </button>
-                  )}
                 </span>
               ))}
             </div>
-            {!isReadOnly && (
-              <div className="space-y-2 pt-2">
-                <p className="text-[11px] text-slate-400">
-                  Adicione apenas quem esta na plataforma e participou deste role.
-                </p>
-                <div className="flex max-h-24 flex-wrap gap-2 overflow-y-auto rounded-2xl border border-white/10 bg-black/20 p-2">
-                  {isLoadingParticipantSuggestions ? (
-                    <span className="text-[11px] font-bold text-slate-500">Carregando participantes...</span>
-                  ) : availableParticipants.length === 0 ? (
-                    <span className="text-[11px] font-bold text-slate-500">Nenhum outro participante disponivel.</span>
-                  ) : (
-                    availableParticipants.map(participant => (
-                      <button
-                        key={participant}
-                        type="button"
-                        onClick={() => addParticipant(participant)}
-                        disabled={formDisabled}
-                        className="rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-[10px] font-bold text-primary transition-colors hover:bg-primary/15 disabled:opacity-40"
-                      >
-                        + {participant}
-                      </button>
-                    ))
-                  )}
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Activity Type */}
@@ -3148,7 +3078,7 @@ function CompletionModal({
               disabled={isSaving}
               onClick={() => onSave({
                 date: formatISOToBRDate(date),
-                participants,
+                participants: [],
                 activityType,
                 wikilocUrl,
               })}
@@ -3157,6 +3087,123 @@ function CompletionModal({
               {isSaving ? 'Salvando...' : initialData ? 'Salvar' : 'Confirmar'}
             </button>
           )}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function QuickCheckinModal({
+  mountainRanges,
+  onClose,
+  onSelect,
+}: {
+  mountainRanges: MountainRange[];
+  onClose: () => void;
+  onSelect: (rangeId: string, peakId: string) => void;
+}) {
+  const rangesWithPeaks = mountainRanges.filter(range => range.peaks.length > 0);
+  const [rangeId, setRangeId] = useState(rangesWithPeaks[0]?.id ?? '');
+  const selectedRange = rangesWithPeaks.find(range => range.id === rangeId) ?? rangesWithPeaks[0];
+  const [peakId, setPeakId] = useState(selectedRange?.peaks[0]?.id ?? '');
+
+  useEffect(() => {
+    if (!selectedRange) {
+      setPeakId('');
+      return;
+    }
+
+    if (!selectedRange.peaks.some(peak => peak.id === peakId)) {
+      setPeakId(selectedRange.peaks[0]?.id ?? '');
+    }
+  }, [peakId, selectedRange]);
+
+  const selectedPeak = selectedRange?.peaks.find(peak => peak.id === peakId);
+  const canContinue = Boolean(selectedRange && selectedPeak);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm overflow-x-hidden overscroll-none sm:p-6"
+    >
+      <motion.div
+        initial={{ scale: 0.98, opacity: 0, y: 20 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.98, opacity: 0, y: 20 }}
+        className="relative mx-auto w-full max-w-sm rounded-3xl border border-primary/20 bg-neutral-forest p-4 sm:p-6 space-y-5 shadow-2xl shadow-black/40"
+      >
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-primary">Novo registro</p>
+            <h2 className="mt-1 text-xl font-bold">Adicionar check-in</h2>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-white">
+            <X size={24} />
+          </button>
+        </div>
+
+        {rangesWithPeaks.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-white/15 bg-white/5 p-5 text-center">
+            <p className="text-sm text-slate-400">Nenhum local cadastrado para check-in.</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                Região / Serra
+              </label>
+              <select
+                value={selectedRange?.id ?? ''}
+                onChange={(event) => setRangeId(event.target.value)}
+                className="w-full rounded-2xl border border-primary/20 bg-primary/5 px-4 h-12 text-sm font-bold text-white focus:border-primary focus:outline-none"
+              >
+                {rangesWithPeaks.map(range => (
+                  <option key={range.id} value={range.id}>{range.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                Local
+              </label>
+              <select
+                value={selectedPeak?.id ?? ''}
+                onChange={(event) => setPeakId(event.target.value)}
+                className="w-full rounded-2xl border border-primary/20 bg-primary/5 px-4 h-12 text-sm font-bold text-white focus:border-primary focus:outline-none"
+              >
+                {(selectedRange?.peaks ?? []).map(peak => (
+                  <option key={peak.id} value={peak.id}>
+                    {peak.name} - {getLocalTypeLabel(resolvePeakLocalType(peak))}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-3 pt-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex-1 h-12 rounded-2xl border border-white/10 text-slate-400 font-bold text-base sm:text-sm"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            disabled={!canContinue}
+            onClick={() => {
+              if (selectedRange && selectedPeak) {
+                onSelect(selectedRange.id, selectedPeak.id);
+              }
+            }}
+            className="flex-1 h-12 rounded-2xl bg-primary text-background-dark font-bold text-base sm:text-sm disabled:opacity-50"
+          >
+            Continuar
+          </button>
         </div>
       </motion.div>
     </motion.div>
@@ -5269,7 +5316,9 @@ function MountainRangeAccordion({
 
 interface TimelineEvent {
   id: string;
+  rangeId: string;
   peakId: string;
+  completionId: string;
   peakName: string;
   rangeName: string;
   localType: LocalType;
@@ -5284,11 +5333,13 @@ function TimelineScreen({
   user,
   mountainRanges,
   participantNameMap,
+  onEditCheckin,
   onBack,
 }: {
   user: User;
   mountainRanges: MountainRange[];
   participantNameMap: Map<string, string>;
+  onEditCheckin: (rangeId: string, peakId: string, completionId?: string) => void;
   onBack: () => void;
 }) {
   const [localTypeFilter, setLocalTypeFilter] = useState<'all' | LocalType>('all');
@@ -5338,7 +5389,9 @@ function TimelineScreen({
           const timestamp = parsedDate?.getTime() ?? 0;
           collectedEvents.push({
             id: `${peak.id}:${completion.id || completionIndex}`,
+            rangeId: range.id,
             peakId: peak.id,
+            completionId: completion.id,
             peakName: peak.name,
             rangeName: range.name,
             localType,
@@ -5577,9 +5630,18 @@ function TimelineScreen({
                           <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
                             <div className="mb-2 flex items-center justify-between gap-2">
                               <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{event.dateLabel}</span>
-                              <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest ${style.cardCompletedClass} ${style.doneTextClass}`}>
-                                {getLocalTypeLabel(event.localType)}
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => onEditCheckin(event.rangeId, event.peakId, event.completionId)}
+                                  className="rounded-full border border-primary/20 bg-primary/5 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-primary transition-colors hover:bg-primary/15"
+                                >
+                                  Editar
+                                </button>
+                                <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest ${style.cardCompletedClass} ${style.doneTextClass}`}>
+                                  {getLocalTypeLabel(event.localType)}
+                                </span>
+                              </div>
                             </div>
                             <p className="text-lg font-bold leading-tight text-slate-100">{event.peakName}</p>
                             <p className="mt-1 text-xs text-slate-400">📍 {event.rangeName}</p>
