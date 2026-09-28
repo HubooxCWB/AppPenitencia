@@ -1754,21 +1754,10 @@ export default function App() {
       return;
     }
 
-    const isStandaloneDisplay = () => (
-      window.matchMedia?.('(display-mode: standalone)').matches ||
-      (window.navigator as Navigator & { standalone?: boolean }).standalone === true
-    );
-
     const updateAppViewportHeight = () => {
-      const useVisualViewport = isStandaloneDisplay();
-      const viewportHeight = useVisualViewport
-        ? (window.visualViewport?.height ?? window.innerHeight)
-        : window.innerHeight;
+      const viewportHeight = Math.max(window.innerHeight, window.visualViewport?.height ?? 0);
       document.documentElement.style.setProperty('--app-height', `${viewportHeight}px`);
-      document.documentElement.style.setProperty(
-        '--app-safe-bottom',
-        useVisualViewport ? 'env(safe-area-inset-bottom)' : '0px',
-      );
+      document.documentElement.style.setProperty('--app-safe-bottom', '0px');
     };
 
     updateAppViewportHeight();
