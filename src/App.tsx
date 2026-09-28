@@ -1754,9 +1754,21 @@ export default function App() {
       return;
     }
 
+    const isStandaloneDisplay = () => (
+      window.matchMedia?.('(display-mode: standalone)').matches ||
+      (window.navigator as Navigator & { standalone?: boolean }).standalone === true
+    );
+
     const updateAppViewportHeight = () => {
-      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const useVisualViewport = isStandaloneDisplay();
+      const viewportHeight = useVisualViewport
+        ? (window.visualViewport?.height ?? window.innerHeight)
+        : window.innerHeight;
       document.documentElement.style.setProperty('--app-height', `${viewportHeight}px`);
+      document.documentElement.style.setProperty(
+        '--app-safe-bottom',
+        useVisualViewport ? 'env(safe-area-inset-bottom)' : '0px',
+      );
     };
 
     updateAppViewportHeight();
@@ -3031,7 +3043,7 @@ export default function App() {
       </AnimatePresence>
 
       {cloudSyncEnabled && completionSyncStatus.state !== 'idle' && (
-        <div className="pointer-events-none fixed inset-x-0 bottom-[calc(5.9rem+env(safe-area-inset-bottom))] z-40 px-3 sm:px-6">
+        <div className="pointer-events-none fixed inset-x-0 bottom-[calc(5.9rem+var(--app-safe-bottom,0px))] z-40 px-3 sm:px-6">
           <div
             className={`mx-auto flex w-full max-w-5xl items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-xs font-bold shadow-xl backdrop-blur-xl ${
               completionSyncStatus.state === 'error'
@@ -3060,7 +3072,7 @@ export default function App() {
       <button
         type="button"
         onClick={() => setIsQuickCheckinOpen(true)}
-        className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] right-4 z-50 flex h-12 items-center gap-2 rounded-full border border-primary/30 bg-primary px-4 text-sm font-black text-background-dark shadow-lg shadow-primary/20 transition-transform active:scale-95 sm:right-6"
+        className="fixed bottom-[calc(5.75rem+var(--app-safe-bottom,0px))] right-4 z-50 flex h-12 items-center gap-2 rounded-full border border-primary/30 bg-primary px-4 text-sm font-black text-background-dark shadow-lg shadow-primary/20 transition-transform active:scale-95 sm:right-6"
       >
         <CheckCircle2 size={18} />
         Check-in
@@ -3069,7 +3081,7 @@ export default function App() {
       {currentScreen === 'SERRAS' && isAdminUser && (
         <button 
           onClick={() => setIsAddingRange(true)}
-          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] left-4 z-50 size-12 bg-primary/10 text-primary rounded-full flex items-center justify-center border border-primary/30 shadow-lg shadow-primary/10 hover:scale-105 transition-transform active:scale-95 sm:left-6"
+          className="fixed bottom-[calc(5.75rem+var(--app-safe-bottom,0px))] left-4 z-50 size-12 bg-primary/10 text-primary rounded-full flex items-center justify-center border border-primary/30 shadow-lg shadow-primary/10 hover:scale-105 transition-transform active:scale-95 sm:left-6"
         >
           <Plus size={24} strokeWidth={3} />
         </button>
@@ -3077,7 +3089,7 @@ export default function App() {
 
       {/* Bottom Navigation */}
       <nav className="z-40 shrink-0 border-t border-white/10 bg-black/95 shadow-[0_-10px_30px_rgba(0,0,0,0.45)] backdrop-blur-xl">
-        <div className="mx-auto w-full max-w-5xl px-3 pb-[env(safe-area-inset-bottom)] sm:px-6">
+        <div className="mx-auto w-full max-w-5xl px-3 pb-[var(--app-safe-bottom,0px)] sm:px-6">
           <div className="flex min-h-16 items-center justify-between px-2 py-1 sm:px-6">
             <NavButton 
               active={currentScreen === 'HOME'} 
