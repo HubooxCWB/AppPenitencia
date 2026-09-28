@@ -86,7 +86,7 @@ const AUTH_STORAGE_KEY = 'penitencia-auth-user';
 const MOUNTAIN_RANGES_STORAGE_KEY = 'penitencia-mountain-ranges';
 const MOUNTAIN_RANGES_BACKUP_STORAGE_KEY = 'penitencia-mountain-ranges-backup';
 const PARTICIPANT_DIRECTORY_STORAGE_KEY = 'penitencia-participant-directory';
-const RELEASE_NOTES_STORAGE_KEY = 'penitencia-release-notes-2026-09-ranking-checkins';
+const RELEASE_NOTES_STORAGE_KEY = 'penitencia-release-notes-2026-09-timeline-gpx-checkin';
 const normalizeText = (value: unknown) =>
   String(value ?? '')
     .normalize('NFD')
@@ -836,6 +836,380 @@ const GLOSSARY_ITEMS: Array<{ term: string; description: string }> = [
     description: 'Queda d\'água natural visitada em trilhas ou montanhas.',
   },
 ];
+
+interface TrailFilePoint {
+  lat: number;
+  lon: number;
+  ele: number | null;
+  time: number | null;
+  dist: number;
+  speed: number | null;
+}
+
+interface TrailFileMetrics {
+  totalDistanceMeters: number;
+  durationMs: number | null;
+  movingTimeMs: number | null;
+  movingDistanceMeters: number;
+  avgMovingSpeedMps: number | null;
+  maxSpeedMps: number | null;
+  gainMeters: number | null;
+  lossMeters: number | null;
+  minElevationMeters: number | null;
+  maxElevationMeters: number | null;
+  pointCount: number;
+  medianIntervalSeconds: number | null;
+  longGapCount: number;
+  jumpCount: number;
+  startTime: number | null;
+  endTime: number | null;
+}
+
+interface TrailFileAnalysis {
+  fileName: string;
+  title: string;
+  points: TrailFilePoint[];
+  sampledPoints: TrailFilePoint[];
+  mapPath: string;
+  elevationPath: string;
+  metrics: TrailFileMetrics;
+  qualityLabel: 'Bom' | 'Atenção' | 'Limitado';
+  qualityClass: string;
+  insights: string[];
+}
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+const getFirstDescendantText = (node: Element, localName: string) => {
+  const element = node.getElementsByTagNameNS('*', localName)[0];
+  return element?.textContent?.trim() ?? '';
+};
+
+const haversineMeters = (latA: number, lonA: number, latB: number, lonB: number) => {
+  const radiusMeters = 6371000;
+  const toRadians = (value: number) => value * Math.PI / 180;
+  const dLat = toRadians(latB - latA);
+  const dLon = toRadians(lonB - lonA);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRadians(latA)) * Math.cos(toRadians(latB)) * Math.sin(dLon / 2) ** 2;
+  return 2 * radiusMeters * Math.asin(Math.min(1, Math.sqrt(a)));
+};
+
+const downsampleTrailPoints = (points: TrailFilePoint[], maxPoints: number) => {
+  if (points.length <= maxPoints) {
+    return points;
+  }
+
+  const step = (points.length - 1) / Math.max(1, maxPoints - 1);
+  return Array.from({ length: maxPoints }, (_, index) => points[Math.round(index * step)])
+    .filter((point, index, sampled) => point && (index === 0 || point !== sampled[index - 1]));
+};
+
+const smoothTrailSeries = (values: Array<number | null>, windowSize: number) => {
+  const halfWindow = Math.floor(windowSize / 2);
+  return values.map((value, index) => {
+    if (!isFiniteNumber(value)) {
+      return null;
+    }
+
+    let total = 0;
+    let count = 0;
+    for (let cursor = Math.max(0, index - halfWindow); cursor <= Math.min(values.length - 1, index + halfWindow); cursor += 1) {
+      const candidate = values[cursor];
+      if (isFiniteNumber(candidate)) {
+        total += candidate;
+        count += 1;
+      }
+    }
+
+    return count > 0 ? total / count : value;
+  });
+};
+
+const getTrailMedian = (values: number[]) => {
+  if (values.length === 0) {
+    return null;
+  }
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
+};
+
+const computeTrailMetrics = (points: TrailFilePoint[]): TrailFileMetrics => {
+  let totalDistanceMeters = 0;
+  let movingDistanceMeters = 0;
+  let movingTimeMs = 0;
+  let maxSpeedMps: number | null = null;
+  let longGapCount = 0;
+  let jumpCount = 0;
+  const intervals: number[] = [];
+
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const distance = haversineMeters(previous.lat, previous.lon, current.lat, current.lon);
+    totalDistanceMeters += distance;
+    current.dist = totalDistanceMeters;
+
+    if (isFiniteNumber(previous.time) && isFiniteNumber(current.time)) {
+      const intervalSeconds = (current.time - previous.time) / 1000;
+      if (intervalSeconds > 0 && intervalSeconds < 86400) {
+        intervals.push(intervalSeconds);
+        if (intervalSeconds > 30) {
+          longGapCount += 1;
+        }
+
+        const speed = distance / intervalSeconds;
+        current.speed = speed;
+        maxSpeedMps = Math.max(maxSpeedMps ?? 0, speed);
+
+        if (speed > 0.14 && speed < 8.33) {
+          movingTimeMs += intervalSeconds * 1000;
+          movingDistanceMeters += distance;
+        }
+
+        if (speed > 8.33 && distance > 25) {
+          jumpCount += 1;
+        }
+      }
+    }
+  }
+
+  const times = points.map(point => point.time).filter(isFiniteNumber);
+  const elevations = points.map(point => point.ele).filter(isFiniteNumber);
+  const smoothElevations = smoothTrailSeries(points.map(point => point.ele), 9);
+  let gainMeters = 0;
+  let lossMeters = 0;
+
+  for (let index = 1; index < smoothElevations.length; index += 1) {
+    const previous = smoothElevations[index - 1];
+    const current = smoothElevations[index];
+    if (!isFiniteNumber(previous) || !isFiniteNumber(current)) {
+      continue;
+    }
+
+    const delta = current - previous;
+    if (delta > 0) {
+      gainMeters += delta;
+    } else if (delta < 0) {
+      lossMeters += Math.abs(delta);
+    }
+  }
+
+  const startTime = times.length > 0 ? Math.min(...times) : null;
+  const endTime = times.length > 0 ? Math.max(...times) : null;
+
+  return {
+    totalDistanceMeters,
+    durationMs: isFiniteNumber(startTime) && isFiniteNumber(endTime) && endTime > startTime ? endTime - startTime : null,
+    movingTimeMs: movingTimeMs > 0 ? movingTimeMs : null,
+    movingDistanceMeters,
+    avgMovingSpeedMps: movingTimeMs > 0 ? movingDistanceMeters / (movingTimeMs / 1000) : null,
+    maxSpeedMps,
+    gainMeters: elevations.length > 1 ? gainMeters : null,
+    lossMeters: elevations.length > 1 ? lossMeters : null,
+    minElevationMeters: elevations.length > 0 ? Math.min(...elevations) : null,
+    maxElevationMeters: elevations.length > 0 ? Math.max(...elevations) : null,
+    pointCount: points.length,
+    medianIntervalSeconds: getTrailMedian(intervals),
+    longGapCount,
+    jumpCount,
+    startTime,
+    endTime,
+  };
+};
+
+const buildTrailMapPath = (points: TrailFilePoint[]) => {
+  if (points.length < 2) {
+    return '';
+  }
+
+  const lats = points.map(point => point.lat);
+  const lons = points.map(point => point.lon);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons);
+  const maxLon = Math.max(...lons);
+  const latSpan = Math.max(0.000001, maxLat - minLat);
+  const lonSpan = Math.max(0.000001, maxLon - minLon);
+  const padding = 7;
+  const size = 100 - (padding * 2);
+
+  return points.map((point, index) => {
+    const x = padding + ((point.lon - minLon) / lonSpan) * size;
+    const y = padding + ((maxLat - point.lat) / latSpan) * size;
+    return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
+  }).join(' ');
+};
+
+const buildTrailElevationPath = (points: TrailFilePoint[]) => {
+  const pointsWithElevation = points.filter(point => isFiniteNumber(point.ele));
+  if (pointsWithElevation.length < 2) {
+    return '';
+  }
+
+  const elevations = pointsWithElevation.map(point => point.ele).filter(isFiniteNumber);
+  const minElevation = Math.min(...elevations);
+  const maxElevation = Math.max(...elevations);
+  const elevationSpan = Math.max(1, maxElevation - minElevation);
+  const maxDistance = Math.max(1, pointsWithElevation[pointsWithElevation.length - 1].dist);
+
+  return pointsWithElevation.map((point, index) => {
+    const x = (point.dist / maxDistance) * 100;
+    const y = 100 - (((point.ele ?? minElevation) - minElevation) / elevationSpan) * 84 - 8;
+    return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
+  }).join(' ');
+};
+
+const getTrailQuality = (metrics: TrailFileMetrics): Pick<TrailFileAnalysis, 'qualityLabel' | 'qualityClass'> => {
+  if (metrics.pointCount < 20 || metrics.jumpCount > 2) {
+    return {
+      qualityLabel: 'Limitado',
+      qualityClass: 'border-red-400/30 bg-red-500/10 text-red-200',
+    };
+  }
+
+  if (metrics.longGapCount > 0 || (metrics.medianIntervalSeconds ?? 0) > 12) {
+    return {
+      qualityLabel: 'Atenção',
+      qualityClass: 'border-amber-400/30 bg-amber-500/10 text-amber-100',
+    };
+  }
+
+  return {
+    qualityLabel: 'Bom',
+    qualityClass: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100',
+  };
+};
+
+const buildTrailInsights = (metrics: TrailFileMetrics) => {
+  const insights: string[] = [];
+  const elevationRange = isFiniteNumber(metrics.minElevationMeters) && isFiniteNumber(metrics.maxElevationMeters)
+    ? metrics.maxElevationMeters - metrics.minElevationMeters
+    : null;
+
+  if (metrics.totalDistanceMeters >= 15000) {
+    insights.push('Trilha longa: vale planejar água, alimentação e margem de luz.');
+  } else if (metrics.totalDistanceMeters >= 7000) {
+    insights.push('Distância intermediária: boa para comparar ritmo e constância.');
+  } else {
+    insights.push('Trajeto curto: ótimo para validar acesso, ritmo e pontos de referência.');
+  }
+
+  if (isFiniteNumber(metrics.gainMeters) && metrics.gainMeters >= 800) {
+    insights.push('Ganho acumulado alto: subida exigente no conjunto do percurso.');
+  } else if (isFiniteNumber(metrics.gainMeters) && metrics.gainMeters >= 350) {
+    insights.push('Ganho acumulado moderado: há trechos de subida relevantes.');
+  }
+
+  if (isFiniteNumber(elevationRange) && elevationRange >= 500) {
+    insights.push('Amplitude altimétrica grande: o mapa de elevação merece atenção.');
+  }
+
+  if (metrics.longGapCount > 0) {
+    insights.push(`${metrics.longGapCount} intervalo(s) acima de 30s podem indicar pausas ou perda de sinal.`);
+  }
+
+  if (metrics.jumpCount > 0) {
+    insights.push(`${metrics.jumpCount} salto(s) de GPS detectado(s); revise a precisão antes de comparar tempos.`);
+  }
+
+  return insights.slice(0, 4);
+};
+
+const parseTrailGpx = (xmlText: string, fileName: string): TrailFileAnalysis => {
+  const xml = new DOMParser().parseFromString(xmlText, 'application/xml');
+  if (xml.querySelector('parsererror')) {
+    throw new Error('O GPX parece ter XML inválido.');
+  }
+
+  const pointNodes = Array.from(xml.getElementsByTagNameNS('*', 'trkpt'));
+  const routePointNodes = pointNodes.length >= 2
+    ? pointNodes
+    : Array.from(xml.getElementsByTagNameNS('*', 'rtept'));
+
+  if (routePointNodes.length < 2) {
+    throw new Error('Não encontrei pontos suficientes de trilha no arquivo.');
+  }
+
+  const points = routePointNodes.map(node => {
+    const lat = Number(node.getAttribute('lat'));
+    const lon = Number(node.getAttribute('lon'));
+    const eleText = getFirstDescendantText(node, 'ele');
+    const timeText = getFirstDescendantText(node, 'time');
+    return {
+      lat,
+      lon,
+      ele: eleText ? Number(eleText) : null,
+      time: timeText ? Date.parse(timeText) : null,
+      dist: 0,
+      speed: null,
+    };
+  }).filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lon));
+
+  if (points.length < 2) {
+    throw new Error('O arquivo não possui coordenadas válidas suficientes.');
+  }
+
+  const trackNode = xml.getElementsByTagNameNS('*', 'trk')[0] ?? xml.getElementsByTagNameNS('*', 'rte')[0];
+  const rawTitle = trackNode ? Array.from(trackNode.children).find(child => child.localName === 'name')?.textContent : '';
+  const metrics = computeTrailMetrics(points);
+  const sampledPoints = downsampleTrailPoints(points, 700);
+  const quality = getTrailQuality(metrics);
+
+  return {
+    fileName,
+    title: rawTitle?.trim() || fileName.replace(/\.gpx$/i, ''),
+    points,
+    sampledPoints,
+    mapPath: buildTrailMapPath(sampledPoints),
+    elevationPath: buildTrailElevationPath(downsampleTrailPoints(points, 320)),
+    metrics,
+    ...quality,
+    insights: buildTrailInsights(metrics),
+  };
+};
+
+const formatTrailDistance = (meters: number) => (
+  meters >= 1000 ? `${(meters / 1000).toFixed(1).replace('.', ',')} km` : `${Math.round(meters)} m`
+);
+
+const formatTrailDuration = (durationMs: number | null) => {
+  if (!isFiniteNumber(durationMs) || durationMs <= 0) {
+    return 'Sem tempo';
+  }
+
+  const totalMinutes = Math.round(durationMs / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0 ? `${hours}h ${String(minutes).padStart(2, '0')}min` : `${minutes}min`;
+};
+
+const formatTrailSpeed = (speedMps: number | null) => (
+  isFiniteNumber(speedMps) ? `${(speedMps * 3.6).toFixed(1).replace('.', ',')} km/h` : 'Sem dado'
+);
+
+const formatTrailMeters = (meters: number | null, prefix = '') => (
+  isFiniteNumber(meters) ? `${prefix}${Math.round(meters)} m` : 'Sem dado'
+);
+
+const formatTrailDateTime = (timestamp: number | null) => {
+  if (!isFiniteNumber(timestamp)) {
+    return 'Sem data';
+  }
+
+  return new Intl.DateTimeFormat('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(timestamp));
+};
 
 const slugifyText = (value: string) =>
   normalizeText(value)
@@ -2488,7 +2862,14 @@ export default function App() {
             mountainRanges={mountainRanges}
             participantNameMap={participantNameMap}
             onViewAllSerras={() => setCurrentScreen('SERRAS')}
+            onOpenTrailAnalysis={() => setCurrentScreen('ANALISE')}
             onOpenProfile={() => setCurrentScreen('PERFIL')}
+          />
+        );
+      case 'ANALISE':
+        return (
+          <TrailAnalysisScreen
+            onBack={() => setCurrentScreen('HOME')}
           />
         );
       case 'SERRAS':
@@ -2552,6 +2933,7 @@ export default function App() {
             mountainRanges={mountainRanges}
             participantNameMap={participantNameMap}
             onViewAllSerras={() => setCurrentScreen('SERRAS')}
+            onOpenTrailAnalysis={() => setCurrentScreen('ANALISE')}
             onOpenProfile={() => setCurrentScreen('PERFIL')}
           />
         );
@@ -2627,21 +3009,16 @@ export default function App() {
         {isQuickCheckinOpen && (
           <QuickCheckinModal
             mountainRanges={mountainRanges}
+            isSaving={isSavingCompletion}
             onClose={() => setIsQuickCheckinOpen(false)}
-            onSelect={(rangeId, peakId, date) => {
-              const range = mountainRanges.find(currentRange => currentRange.id === rangeId);
-              const peak = range?.peaks.find(currentPeak => currentPeak.id === peakId);
+            onSave={({ rangeId, peakId, date, activityType, wikilocUrl }) => {
               setIsQuickCheckinOpen(false);
-              if (peak) {
-                setIsCompletingPeak({
-                  rangeId,
-                  peak,
-                  initialData: {
-                    date,
-                    participants: [],
-                  },
-                });
-              }
+              savePeakCompletion(rangeId, peakId, {
+                date,
+                participants: [],
+                activityType,
+                wikilocUrl,
+              });
             }}
           />
         )}
@@ -2709,16 +3086,16 @@ export default function App() {
               label="HOME" 
             />
             <NavButton 
-              active={currentScreen === 'SERRAS'} 
-              onClick={() => setCurrentScreen('SERRAS')} 
-              icon={<Mountain size={24} />} 
-              label="REGIÕES" 
-            />
-            <NavButton 
               active={currentScreen === 'TIMELINE'} 
               onClick={() => setCurrentScreen('TIMELINE')} 
               icon={<BookOpen size={24} />} 
               label="TIMELINE" 
+            />
+            <NavButton
+              active={currentScreen === 'SERRAS'}
+              onClick={() => setCurrentScreen('SERRAS')}
+              icon={<Mountain size={24} />}
+              label="REGIÕES"
             />
             <NavButton 
               active={currentScreen === 'RANKING'} 
@@ -2742,19 +3119,19 @@ export default function App() {
 function ReleaseNotesModal({ onClose }: { onClose: () => void }) {
   const updates = [
     {
-      title: 'Ranking mensal mais justo',
-      description: 'Os destaques agora renovam todo mês e deixam a disputa geral em segundo plano.',
-      icon: <Trophy size={18} />,
+      title: 'Timeline mais viva',
+      description: 'A linha do tempo ganhou um resumo pessoal com mês ativo, região forte e ritmo do ano.',
+      icon: <BookOpen size={18} />,
     },
     {
-      title: 'Tipo de rolê no check-in',
-      description: 'Marque bate-volta, ataque, trekking, travessia ou acampamento.',
-      icon: <Route size={18} />,
-    },
-    {
-      title: 'Check-in mais rapido',
-      description: 'Use o botao flutuante para escolher a serra, o local e registrar sem procurar na lista.',
+      title: 'Check-in direto',
+      description: 'Busque o local, escolha o tipo de rolê e adicione Wikiloc sem sair do fluxo rápido.',
       icon: <CheckCircle2 size={18} />,
+    },
+    {
+      title: 'Análise de GPX',
+      description: 'A nova área de análise lê arquivos GPX e mostra mapa, altimetria e diagnóstico da trilha.',
+      icon: <Route size={18} />,
     },
   ];
 
@@ -3203,12 +3580,20 @@ function ChoiceSelector({
 
 function QuickCheckinModal({
   mountainRanges,
+  isSaving = false,
   onClose,
-  onSelect,
+  onSave,
 }: {
   mountainRanges: MountainRange[];
+  isSaving?: boolean;
   onClose: () => void;
-  onSelect: (rangeId: string, peakId: string, date: string) => void;
+  onSave: (data: {
+    rangeId: string;
+    peakId: string;
+    date: string;
+    activityType: ActivityType;
+    wikilocUrl?: string;
+  }) => void;
 }) {
   const getTodayLocalISODate = () => {
     const now = new Date();
@@ -3228,6 +3613,9 @@ function QuickCheckinModal({
   const selectedRange = rangesWithPeaks.find(range => range.id === rangeId) ?? rangesWithPeaks[0];
   const [peakId, setPeakId] = useState(selectedRange?.peaks[0]?.id ?? '');
   const [date, setDate] = useState(getTodayLocalISODate);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [activityType, setActivityType] = useState<ActivityType>(DEFAULT_ACTIVITY_TYPE);
+  const [wikilocUrl, setWikilocUrl] = useState('');
 
   useEffect(() => {
     if (!selectedRange) {
@@ -3241,7 +3629,17 @@ function QuickCheckinModal({
   }, [peakId, selectedRange]);
 
   const selectedPeak = selectedRange?.peaks.find(peak => peak.id === peakId);
-  const canContinue = Boolean(selectedRange && selectedPeak && date);
+  const canSave = Boolean(selectedRange && selectedPeak && date && activityType) && !isSaving;
+  const normalizedSearchTerm = normalizeText(searchTerm);
+  const matchingLocations = normalizedSearchTerm
+    ? rangesWithPeaks
+        .flatMap(range => range.peaks.map(peak => ({ range, peak })))
+        .filter(({ range, peak }) => {
+          const haystack = `${range.name} ${peak.name} ${getLocalTypeLabel(resolvePeakLocalType(peak))}`;
+          return normalizeText(haystack).includes(normalizedSearchTerm);
+        })
+        .slice(0, 6)
+    : [];
 
   return (
     <motion.div
@@ -3261,7 +3659,7 @@ function QuickCheckinModal({
             <p className="text-[10px] font-black uppercase tracking-[0.22em] text-primary">Novo registro</p>
             <h2 className="mt-1 text-xl font-bold">Adicionar check-in</h2>
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-white">
+          <button onClick={onClose} disabled={isSaving} className="text-slate-500 hover:text-white disabled:opacity-40">
             <X size={24} />
           </button>
         </div>
@@ -3271,7 +3669,51 @@ function QuickCheckinModal({
             <p className="text-sm text-slate-400">Nenhum local cadastrado para check-in.</p>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="max-h-[min(68dvh,34rem)] space-y-4 overflow-y-auto overscroll-contain pr-0.5 no-scrollbar">
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                Buscar local
+              </label>
+              <div className="relative">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/70" size={17} />
+                <input
+                  type="search"
+                  value={searchTerm}
+                  onChange={(event) => setSearchTerm(event.target.value)}
+                  placeholder="Digite o pico, morro, trilha..."
+                  className="h-12 w-full rounded-2xl border border-primary/20 bg-primary/5 pl-11 pr-4 text-base font-bold text-white placeholder:text-slate-600 focus:border-primary focus:outline-none sm:text-sm"
+                />
+              </div>
+              {normalizedSearchTerm && (
+                <div className="max-h-52 space-y-2 overflow-y-auto rounded-2xl border border-white/10 bg-black/20 p-2 no-scrollbar">
+                  {matchingLocations.length > 0 ? (
+                    matchingLocations.map(({ range, peak }) => (
+                      <button
+                        key={`${range.id}:${peak.id}`}
+                        type="button"
+                        onClick={() => {
+                          setRangeId(range.id);
+                          setPeakId(peak.id);
+                          setSearchTerm('');
+                        }}
+                        className="flex w-full min-w-0 items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-left transition-colors hover:border-primary/30 hover:bg-primary/10"
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-black text-white">{peak.name}</span>
+                          <span className="block truncate text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                            {range.name} - {getLocalTypeLabel(resolvePeakLocalType(peak))}
+                          </span>
+                        </span>
+                        <ChevronRight size={16} className="shrink-0 text-primary" />
+                      </button>
+                    ))
+                  ) : (
+                    <p className="px-3 py-2 text-xs font-semibold text-slate-500">Nenhum local encontrado.</p>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div className="space-y-1.5">
               <ChoiceSelector
                 label="Região / Serra"
@@ -3311,28 +3753,75 @@ function QuickCheckinModal({
                 className="h-12 w-full rounded-2xl border border-primary/20 bg-primary/5 px-4 text-base font-bold text-white focus:border-primary focus:outline-none sm:text-sm"
               />
             </div>
+
+            <div className="space-y-1.5">
+              <label className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                <Route size={12} />
+                Tipo de rolê
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {ACTIVITY_TYPES.map(type => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => setActivityType(type)}
+                    disabled={isSaving}
+                    className={`min-h-11 rounded-2xl border px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider transition-colors disabled:opacity-60 ${
+                      activityType === type
+                        ? 'border-primary bg-primary text-background-dark'
+                        : 'border-primary/20 bg-primary/5 text-primary hover:bg-primary/15'
+                    }`}
+                  >
+                    {ACTIVITY_TYPE_LABELS[type]}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                <MapIcon size={12} />
+                Link Wikiloc opcional
+              </label>
+              <input
+                type="url"
+                inputMode="url"
+                value={wikilocUrl}
+                onChange={(event) => setWikilocUrl(event.target.value)}
+                disabled={isSaving}
+                placeholder="https://pt.wikiloc.com/..."
+                className="h-12 w-full rounded-2xl border border-primary/20 bg-primary/5 px-4 text-base font-bold text-white placeholder:text-slate-600 focus:border-primary focus:outline-none disabled:opacity-60 sm:text-sm"
+              />
+            </div>
           </div>
         )}
 
-        <div className="flex gap-3 pt-2">
+        <div className="flex gap-3 border-t border-white/10 pt-3">
           <button
             type="button"
             onClick={onClose}
-            className="flex-1 h-12 rounded-2xl border border-white/10 text-slate-400 font-bold text-base sm:text-sm"
+            disabled={isSaving}
+            className="flex-1 h-12 rounded-2xl border border-white/10 text-slate-400 font-bold text-base disabled:opacity-50 sm:text-sm"
           >
             Cancelar
           </button>
           <button
             type="button"
-            disabled={!canContinue}
+            disabled={!canSave}
             onClick={() => {
               if (selectedRange && selectedPeak) {
-                onSelect(selectedRange.id, selectedPeak.id, formatISOToBRDate(date));
+                onSave({
+                  rangeId: selectedRange.id,
+                  peakId: selectedPeak.id,
+                  date: formatISOToBRDate(date),
+                  activityType,
+                  wikilocUrl: wikilocUrl.trim() || undefined,
+                });
               }
             }}
             className="flex-1 h-12 rounded-2xl bg-primary text-background-dark font-bold text-base sm:text-sm disabled:opacity-50"
           >
-            Continuar
+            {isSaving ? 'Salvando...' : 'Salvar'}
           </button>
         </div>
       </motion.div>
@@ -4723,12 +5212,14 @@ function HomeScreen({
   mountainRanges,
   participantNameMap,
   onViewAllSerras,
+  onOpenTrailAnalysis,
   onOpenProfile,
 }: {
   user: User,
   mountainRanges: MountainRange[],
   participantNameMap: Map<string, string>,
   onViewAllSerras: () => void,
+  onOpenTrailAnalysis: () => void,
   onOpenProfile: () => void,
 }) {
   const scopedMountainRanges = scopeMountainRangesForUser(mountainRanges, user, participantNameMap);
@@ -4822,6 +5313,35 @@ function HomeScreen({
           <Bell size={20} />
         </button>
       </header>
+
+      <section className="grid gap-3 sm:grid-cols-2">
+        <button
+          type="button"
+          onClick={onOpenTrailAnalysis}
+          className="min-w-0 rounded-2xl border border-cyan-400/20 bg-cyan-500/[0.06] p-4 text-left transition-colors hover:bg-cyan-500/10"
+        >
+          <span className="flex size-10 items-center justify-center rounded-xl border border-cyan-300/20 bg-cyan-300/10 text-cyan-200">
+            <MapIcon size={20} />
+          </span>
+          <span className="mt-3 block text-sm font-black text-white">Analisar trilha</span>
+          <span className="mt-1 block text-xs font-semibold leading-relaxed text-slate-400">
+            Suba um GPX para ver mapa, altimetria e leitura rápida.
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={onViewAllSerras}
+          className="min-w-0 rounded-2xl border border-primary/20 bg-primary/[0.06] p-4 text-left transition-colors hover:bg-primary/10"
+        >
+          <span className="flex size-10 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary">
+            <CheckCircle2 size={20} />
+          </span>
+          <span className="mt-3 block text-sm font-black text-white">Registrar conquista</span>
+          <span className="mt-1 block text-xs font-semibold leading-relaxed text-slate-400">
+            Vá direto aos locais e alimente sua timeline.
+          </span>
+        </button>
+      </section>
 
       {/* Dashboard */}
       <section className="w-full min-w-0 overflow-hidden bg-neutral-forest/40 rounded-2xl p-4 sm:p-6 border border-primary/20 backdrop-blur-sm">
@@ -5164,6 +5684,272 @@ function FilterTab({ label, active = false, onClick }: { label: string, active?:
   );
 }
 
+function TrailAnalysisScreen({ onBack }: { onBack: () => void }) {
+  return (
+    <div className="flex min-h-screen flex-col overflow-x-hidden">
+      <header className="sticky top-0 z-20 border-b border-cyan-400/15 bg-background-dark/95 p-4 backdrop-blur-md">
+        <div className="flex items-center justify-between gap-3">
+          <button
+            onClick={onBack}
+            type="button"
+            className="flex size-10 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-cyan-300/10"
+            aria-label="Voltar"
+            title="Voltar"
+          >
+            <ChevronRight className="rotate-180" />
+          </button>
+          <div className="min-w-0 text-center">
+            <p className="text-[9px] font-black uppercase tracking-[0.22em] text-cyan-300">Laboratório</p>
+            <h1 className="truncate text-lg font-black tracking-tight">Análise de trilha</h1>
+          </div>
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-full border border-cyan-300/20 bg-cyan-300/10 text-cyan-200">
+            <MapIcon size={18} />
+          </div>
+        </div>
+      </header>
+
+      <div className="space-y-4 p-4">
+        <TrailFileAnalyzer />
+
+        <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Como usar isso no app</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            {[
+              ['Antes', 'Validar distância, ganho e esforço esperado.'],
+              ['Depois', 'Revisar se o GPX tem saltos ou buracos antes de compartilhar.'],
+              ['Timeline', 'Transformar o registro em história, não só número.'],
+            ].map(([title, description]) => (
+              <div key={title} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                <p className="text-sm font-black text-white">{title}</p>
+                <p className="mt-1 text-xs font-semibold leading-relaxed text-slate-400">{description}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function TrailFileAnalyzer() {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [analysis, setAnalysis] = useState<TrailFileAnalysis | null>(null);
+  const [error, setError] = useState('');
+  const [isReading, setIsReading] = useState(false);
+
+  const projectedPoints = useMemo(() => {
+    if (!analysis?.sampledPoints.length) {
+      return [];
+    }
+
+    const lats = analysis.sampledPoints.map(point => point.lat);
+    const lons = analysis.sampledPoints.map(point => point.lon);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLon = Math.min(...lons);
+    const maxLon = Math.max(...lons);
+    const latSpan = Math.max(0.000001, maxLat - minLat);
+    const lonSpan = Math.max(0.000001, maxLon - minLon);
+    const padding = 7;
+    const size = 100 - (padding * 2);
+
+    return analysis.sampledPoints.map(point => ({
+      x: padding + ((point.lon - minLon) / lonSpan) * size,
+      y: padding + ((maxLat - point.lat) / latSpan) * size,
+    }));
+  }, [analysis]);
+
+  const handleFile = async (file: File | null | undefined) => {
+    if (!file) {
+      return;
+    }
+
+    setError('');
+
+    if (!file.name.toLowerCase().endsWith('.gpx')) {
+      setAnalysis(null);
+      setError('Envie um arquivo .gpx para gerar a análise da trilha.');
+      return;
+    }
+
+    setIsReading(true);
+    try {
+      const text = await file.text();
+      setAnalysis(parseTrailGpx(text, file.name));
+    } catch (caughtError) {
+      setAnalysis(null);
+      setError(caughtError instanceof Error ? caughtError.message : 'Não foi possível ler esse GPX.');
+    } finally {
+      setIsReading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const metricCards = analysis ? [
+    ['Distância', formatTrailDistance(analysis.metrics.totalDistanceMeters), `${analysis.metrics.pointCount.toLocaleString('pt-BR')} pts`],
+    ['Ganho', formatTrailMeters(analysis.metrics.gainMeters, '+'), formatTrailMeters(analysis.metrics.lossMeters, '-')],
+    ['Tempo', formatTrailDuration(analysis.metrics.durationMs), formatTrailDateTime(analysis.metrics.startTime)],
+    ['Movimento', formatTrailDuration(analysis.metrics.movingTimeMs), formatTrailSpeed(analysis.metrics.avgMovingSpeedMps)],
+    ['Altitude', formatTrailMeters(analysis.metrics.maxElevationMeters), analysis.metrics.minElevationMeters ? `mín. ${Math.round(analysis.metrics.minElevationMeters)} m` : 'Sem mínimo'],
+    ['Vel. máx.', formatTrailSpeed(analysis.metrics.maxSpeedMps), analysis.metrics.medianIntervalSeconds ? `GPS ${Math.round(analysis.metrics.medianIntervalSeconds)}s` : 'Sem tempo'],
+  ] : [];
+
+  const firstPoint = projectedPoints[0];
+  const lastPoint = projectedPoints[projectedPoints.length - 1];
+
+  return (
+    <section className="rounded-2xl border border-cyan-400/20 bg-cyan-500/[0.04] p-3 shadow-lg shadow-black/10 sm:p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-cyan-300">Análise de trilha</p>
+          <h2 className="mt-1 text-lg font-black leading-tight text-white">Subir GPX</h2>
+        </div>
+
+        <div className="flex shrink-0 gap-2">
+          {analysis && (
+            <button
+              type="button"
+              onClick={() => {
+                setAnalysis(null);
+                setError('');
+              }}
+              className="flex h-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 px-3 text-slate-300 transition-colors hover:bg-white/10"
+              aria-label="Limpar análise"
+              title="Limpar análise"
+            >
+              <X size={18} />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isReading}
+            className="flex h-11 items-center justify-center gap-2 rounded-xl bg-cyan-300 px-4 text-sm font-black text-background-dark shadow-lg shadow-cyan-500/10 transition-transform active:scale-95 disabled:opacity-60"
+          >
+            {isReading ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
+            {isReading ? 'Lendo' : 'Arquivo'}
+          </button>
+        </div>
+      </div>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".gpx,application/gpx+xml,application/xml,text/xml"
+        className="hidden"
+        onChange={(event) => void handleFile(event.target.files?.[0])}
+      />
+
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault();
+          void handleFile(event.dataTransfer.files?.[0]);
+        }}
+        className={`mt-3 flex w-full flex-col items-center justify-center gap-2 rounded-2xl border border-dashed p-5 text-center transition-colors ${
+          analysis
+            ? 'border-white/10 bg-black/15 text-slate-400'
+            : 'border-cyan-300/30 bg-black/20 text-cyan-100 hover:border-cyan-300/60 hover:bg-cyan-500/10'
+        }`}
+      >
+        <Route size={26} className={analysis ? 'text-cyan-300' : 'text-cyan-200'} />
+        <span className="text-sm font-bold">
+          {analysis ? analysis.fileName : 'Selecionar GPX da trilha'}
+        </span>
+        <span className="text-xs text-slate-500">Processamento local no aparelho</span>
+      </button>
+
+      {error && (
+        <div className="mt-3 flex items-start gap-2 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-xs font-semibold leading-relaxed text-red-100">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          {error}
+        </div>
+      )}
+
+      {analysis && (
+        <div className="mt-4 space-y-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <h3 className="break-words text-base font-black leading-tight text-white">{analysis.title}</h3>
+              <p className="mt-1 text-xs text-slate-500">
+                {formatTrailDateTime(analysis.metrics.startTime)} • {analysis.fileName}
+              </p>
+            </div>
+            <span className={`inline-flex w-fit shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${analysis.qualityClass}`}>
+              <CheckCircle2 size={13} />
+              {analysis.qualityLabel}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+            {metricCards.map(([label, value, sub]) => (
+              <div key={label} className="min-w-0 rounded-xl border border-white/10 bg-black/20 p-3">
+                <p className="text-[9px] font-black uppercase tracking-wider text-slate-500">{label}</p>
+                <p className="mt-1 truncate text-lg font-black text-slate-50">{value}</p>
+                <p className="mt-0.5 truncate text-[10px] font-semibold text-slate-500">{sub}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+            <div className="overflow-hidden rounded-2xl border border-white/10 bg-[#06100c]">
+              <div className="flex items-center justify-between border-b border-white/10 px-3 py-2">
+                <span className="inline-flex items-center gap-2 text-xs font-black text-cyan-100">
+                  <MapIcon size={15} />
+                  Mapa da rota
+                </span>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600">SVG</span>
+              </div>
+              <div className="aspect-[4/3] w-full p-2 sm:aspect-[16/10]">
+                <svg viewBox="0 0 100 100" className="h-full w-full rounded-xl bg-[radial-gradient(circle_at_50%_50%,rgba(18,195,18,0.12),rgba(0,0,0,0.12)_46%,rgba(0,0,0,0.34))]" role="img" aria-label="Mapa simplificado da rota GPX">
+                  <path d="M 10 20 H 90 M 10 40 H 90 M 10 60 H 90 M 10 80 H 90 M 20 10 V 90 M 40 10 V 90 M 60 10 V 90 M 80 10 V 90" stroke="rgba(255,255,255,0.06)" strokeWidth="0.45" />
+                  <path d={analysis.mapPath} fill="none" stroke="rgba(0,0,0,0.8)" strokeWidth="4.3" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d={analysis.mapPath} fill="none" stroke="#67e8f9" strokeWidth="2.35" strokeLinecap="round" strokeLinejoin="round" />
+                  {firstPoint && <circle cx={firstPoint.x} cy={firstPoint.y} r="2.4" fill="#12c312" stroke="#021004" strokeWidth="1" />}
+                  {lastPoint && <circle cx={lastPoint.x} cy={lastPoint.y} r="2.4" fill="#fb7185" stroke="#021004" strokeWidth="1" />}
+                </svg>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Elevação</p>
+                <div className="mt-2 h-28 overflow-hidden rounded-xl bg-white/[0.03]">
+                  {analysis.elevationPath ? (
+                    <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full" role="img" aria-label="Perfil de elevação da trilha">
+                      <path d={`${analysis.elevationPath} L 100 100 L 0 100 Z`} fill="rgba(18,195,18,0.16)" />
+                      <path d={analysis.elevationPath} fill="none" stroke="#12c312" strokeWidth="2.2" vectorEffect="non-scaling-stroke" />
+                    </svg>
+                  ) : (
+                    <div className="flex h-full items-center justify-center px-4 text-center text-xs font-semibold text-slate-500">
+                      Sem elevação no GPX
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Leitura rápida</p>
+                <div className="mt-2 space-y-2">
+                  {analysis.insights.map(insight => (
+                    <p key={insight} className="rounded-xl border border-cyan-300/10 bg-cyan-300/5 px-3 py-2 text-xs font-semibold leading-relaxed text-slate-300">
+                      {insight}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 interface MountainRangeAccordionProps {
   range: MountainRange;
   isOpen: boolean;
@@ -5459,6 +6245,24 @@ interface TimelineEvent {
   wikilocUrl?: string;
 }
 
+function TimelineInsightCard({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <div className="min-w-0 rounded-xl border border-white/10 bg-black/20 p-3">
+      <p className="text-[9px] font-black uppercase tracking-wider text-slate-500">{label}</p>
+      <p className="mt-1 truncate text-lg font-black text-slate-50">{value}</p>
+      <p className="mt-0.5 truncate text-[10px] font-semibold text-slate-500">{detail}</p>
+    </div>
+  );
+}
+
 function TimelineScreen({
   user,
   mountainRanges,
@@ -5678,6 +6482,48 @@ function TimelineScreen({
     return streak;
   }, [eventsWithValidDate]);
 
+  const personalTimelineSummary = useMemo(() => {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+    const thisMonthEvents = eventsWithValidDate.filter(event => {
+      const date = new Date(event.timestamp);
+      return date.getFullYear() === currentYear && date.getMonth() === currentMonth;
+    });
+    const thisYearEvents = eventsWithValidDate.filter(event => {
+      const date = new Date(event.timestamp);
+      return date.getFullYear() === currentYear;
+    });
+    const activeMonthKeys = new Set<string>(
+      eventsWithValidDate.map(event => {
+        const date = new Date(event.timestamp);
+        return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      }),
+    );
+    const rangeCounts = new Map<string, number>();
+    const activityCounts = new Map<ActivityType, number>();
+
+    thisYearEvents.forEach(event => {
+      rangeCounts.set(event.rangeName, (rangeCounts.get(event.rangeName) ?? 0) + 1);
+      activityCounts.set(event.activityType, (activityCounts.get(event.activityType) ?? 0) + 1);
+    });
+
+    const topRange = Array.from(rangeCounts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'pt-BR'))[0] ?? null;
+    const topActivity = Array.from(activityCounts.entries()).sort((a, b) => b[1] - a[1])[0] ?? null;
+    const activeMonthsThisYear = Array.from(activeMonthKeys).filter(key => key.startsWith(`${currentYear}-`)).length;
+
+    return {
+      currentYear,
+      thisMonthCount: thisMonthEvents.length,
+      thisYearCount: thisYearEvents.length,
+      activeMonthsThisYear,
+      topRangeLabel: topRange ? topRange[0] : 'Sem região dominante',
+      topRangeCount: topRange ? topRange[1] : 0,
+      topActivityLabel: topActivity ? ACTIVITY_TYPE_LABELS[topActivity[0]] : 'Sem padrão ainda',
+      topActivityCount: topActivity ? topActivity[1] : 0,
+    };
+  }, [eventsWithValidDate]);
+
   return (
     <div className="flex min-h-screen flex-col overflow-x-hidden pb-4">
       <header className="sticky top-0 z-20 border-b border-primary/20 bg-background-dark/95 p-4 backdrop-blur-md">
@@ -5692,6 +6538,40 @@ function TimelineScreen({
       </header>
 
       <div className="space-y-4 p-4">
+        <section className="rounded-2xl border border-primary/20 bg-[radial-gradient(circle_at_top_left,rgba(18,195,18,0.16),transparent_42%),rgba(255,255,255,0.035)] p-4">
+          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-primary">Seu arquivo vivo</p>
+          <h2 className="mt-1 text-2xl font-black leading-tight text-white">
+            {personalTimelineSummary.thisMonthCount > 0
+              ? `${personalTimelineSummary.thisMonthCount} rolê(s) este mês`
+              : 'A próxima saída ainda não entrou na linha do tempo'}
+          </h2>
+          <p className="mt-2 text-sm font-medium leading-relaxed text-slate-400">
+            A timeline junta consistência, variedade e histórico sem pedir relato extra no check-in.
+          </p>
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <TimelineInsightCard
+              label="Este ano"
+              value={String(personalTimelineSummary.thisYearCount)}
+              detail="check-ins"
+            />
+            <TimelineInsightCard
+              label="Meses ativos"
+              value={String(personalTimelineSummary.activeMonthsThisYear)}
+              detail={`em ${personalTimelineSummary.currentYear}`}
+            />
+            <TimelineInsightCard
+              label="Região forte"
+              value={personalTimelineSummary.topRangeLabel}
+              detail={personalTimelineSummary.topRangeCount > 0 ? `${personalTimelineSummary.topRangeCount} registro(s)` : 'sem dados'}
+            />
+            <TimelineInsightCard
+              label="Seu ritmo"
+              value={personalTimelineSummary.topActivityLabel}
+              detail={personalTimelineSummary.topActivityCount > 0 ? `${personalTimelineSummary.topActivityCount} vez(es)` : 'sem dados'}
+            />
+          </div>
+        </section>
+
         <section className="rounded-2xl border border-primary/20 bg-gradient-to-r from-white/5 via-white/[0.03] to-primary/10 p-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
