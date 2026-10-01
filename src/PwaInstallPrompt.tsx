@@ -65,7 +65,7 @@ export default function PwaInstallPrompt() {
 
   return (
     <aside
-      className="fixed inset-x-3 z-[100] mx-auto max-w-md rounded-2xl border border-primary/25 bg-black/95 p-4 text-slate-100 shadow-2xl backdrop-blur-xl bottom-[calc(6.3rem+env(safe-area-inset-bottom))]"
+      className="fixed inset-x-3 z-[100] mx-auto max-w-md rounded-2xl border border-primary/25 bg-black/95 p-4 text-slate-100 shadow-2xl backdrop-blur-xl bottom-[calc(5.4rem+var(--app-safe-bottom,0px))]"
       aria-label="Instalar Penitência CWB"
     >
       <button

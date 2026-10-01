@@ -13,7 +13,6 @@ import {
   Target, 
   Trophy, 
   User as UserIcon, 
-  Bell, 
   Plus, 
   Search,
   Settings,
@@ -482,6 +481,22 @@ function AvatarImage({
       alt={alt}
       className={className}
       referrerPolicy="no-referrer"
+    />
+  );
+}
+
+function BrandLogo({
+  className = '',
+}: {
+  className?: string;
+}) {
+  return (
+    <img
+      src={`${import.meta.env.BASE_URL}brand/penitencia-logo.png`}
+      alt="Penitência CWB"
+      className={`object-contain ${className}`}
+      draggable={false}
+      loading="eager"
     />
   );
 }
@@ -3956,17 +3971,22 @@ function LoginScreen({
   };
 
   return (
-    <main className="relative mx-auto flex min-h-[100dvh] w-full max-w-md flex-col justify-center overflow-x-hidden px-5 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(1.5rem,env(safe-area-inset-top))] sm:px-8">
+    <main className="relative mx-auto flex min-h-[100dvh] w-full max-w-md flex-col justify-start overflow-x-hidden overflow-y-auto px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] sm:justify-center sm:px-8">
       {/* Background Glow */}
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 size-64 bg-primary/10 blur-[100px] rounded-full -z-10" />
       
-      <div className="space-y-8 sm:space-y-12">
-        <header className="space-y-4 text-center">
-          <div className="inline-flex items-center justify-center size-20 bg-primary/10 rounded-3xl border border-primary/20 mb-4">
-            <Mountain size={40} className="text-primary" />
+      <div className="space-y-5 sm:space-y-8">
+        <header className="space-y-3 text-center">
+          <div className="mx-auto flex min-h-28 w-full max-w-xs items-center justify-center rounded-[1.75rem] border border-white/10 bg-[#3e4c37] px-5 py-4 shadow-2xl shadow-black/30">
+            <BrandLogo className="h-20 w-full" />
           </div>
-          <h1 className="text-4xl font-bold tracking-tight">Penitência CWB</h1>
-          <p className="text-slate-400 text-sm">
+          <div className="space-y-1.5">
+            <h1 className="text-3xl font-black leading-none tracking-tight">Penitência CWB</h1>
+            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-[#f2a156]">
+              Onde a penitência vira recompensa
+            </p>
+          </div>
+          <p className="text-sm leading-snug text-slate-400">
             {mode === 'signin'
               ? 'Entre com seu e-mail para continuar sua jornada.'
               : mode === 'signup'
@@ -3975,8 +3995,8 @@ function LoginScreen({
           </p>
         </header>
 
-        <form onSubmit={handleSubmit} className="space-y-5 sm:space-y-6">
-          <div className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4 sm:space-y-5">
+          <div className="space-y-3">
             <div className="relative">
               <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-primary/60" size={20} />
               <input 
@@ -3985,7 +4005,7 @@ function LoginScreen({
                 placeholder="seuemail@dominio.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-4 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
+                className="h-[3.25rem] w-full rounded-2xl border border-primary/20 bg-primary/5 pl-12 pr-4 text-sm transition-all placeholder:text-slate-600 focus:border-primary focus:outline-none"
                 required
               />
             </div>
@@ -3998,7 +4018,7 @@ function LoginScreen({
                   placeholder="Nome para exibição (opcional)"
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
-                  className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-4 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
+                  className="h-[3.25rem] w-full rounded-2xl border border-primary/20 bg-primary/5 pl-12 pr-4 text-sm transition-all placeholder:text-slate-600 focus:border-primary focus:outline-none"
                 />
               </div>
             )}
@@ -4011,7 +4031,7 @@ function LoginScreen({
                 autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
+                className="h-[3.25rem] w-full rounded-2xl border border-primary/20 bg-primary/5 pl-12 pr-12 text-sm transition-all placeholder:text-slate-600 focus:border-primary focus:outline-none"
                 required
               />
               <button
@@ -4036,7 +4056,7 @@ function LoginScreen({
                     placeholder="Código recebido no e-mail"
                     value={resetCode}
                     onChange={(e) => setResetCode(e.target.value)}
-                    className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-4 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
+                    className="h-[3.25rem] w-full rounded-2xl border border-primary/20 bg-primary/5 pl-12 pr-4 text-sm transition-all placeholder:text-slate-600 focus:border-primary focus:outline-none"
                     required
                   />
                 </div>
@@ -4048,7 +4068,7 @@ function LoginScreen({
                     placeholder="Nova senha"
                     value={resetNewPassword}
                     onChange={(e) => setResetNewPassword(e.target.value)}
-                    className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
+                    className="h-[3.25rem] w-full rounded-2xl border border-primary/20 bg-primary/5 pl-12 pr-12 text-sm transition-all placeholder:text-slate-600 focus:border-primary focus:outline-none"
                     required
                   />
                   <button
@@ -4069,7 +4089,7 @@ function LoginScreen({
                     placeholder="Confirmar nova senha"
                     value={resetConfirmPassword}
                     onChange={(e) => setResetConfirmPassword(e.target.value)}
-                    className="w-full bg-primary/5 border border-primary/20 rounded-2xl h-14 pl-12 pr-12 text-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-600"
+                    className="h-[3.25rem] w-full rounded-2xl border border-primary/20 bg-primary/5 pl-12 pr-12 text-sm transition-all placeholder:text-slate-600 focus:border-primary focus:outline-none"
                     required
                   />
                   <button
@@ -4086,21 +4106,6 @@ function LoginScreen({
             )}
           </div>
 
-          {mode === 'signin' && (
-            <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-primary/15 bg-primary/5 px-4 py-3 text-sm text-slate-300">
-              <input
-                type="checkbox"
-                checked={keepConnected}
-                onChange={(event) => setKeepConnected(event.target.checked)}
-                className="size-5 accent-primary"
-              />
-              <span>
-                <strong className="block text-slate-100">Manter conta conectada</strong>
-                <span className="text-xs text-slate-400">Continuar conectado ao fechar e abrir o app.</span>
-              </span>
-            </label>
-          )}
-
           {error && (
             <p className="text-red-400 text-xs font-bold text-center">{error}</p>
           )}
@@ -4111,7 +4116,7 @@ function LoginScreen({
           <button 
             type="submit"
             disabled={isLoading || isResettingPassword}
-            className="w-full bg-primary text-background-dark font-bold h-14 rounded-2xl shadow-lg shadow-primary/20 flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50"
+            className="flex h-[3.25rem] w-full items-center justify-center gap-2 rounded-2xl bg-primary font-bold text-background-dark shadow-lg shadow-primary/20 transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-50"
           >
             {isLoading ? (
               <div className="size-5 border-2 border-background-dark border-t-transparent rounded-full animate-spin" />
@@ -4122,6 +4127,21 @@ function LoginScreen({
               </>
             )}
           </button>
+
+          {mode === 'signin' && (
+            <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-primary/15 bg-primary/5 px-4 py-2.5 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={keepConnected}
+                onChange={(event) => setKeepConnected(event.target.checked)}
+                className="size-5 accent-primary"
+              />
+              <span className="min-w-0">
+                <strong className="block text-sm leading-tight text-slate-100">Manter conta conectada</strong>
+                <span className="block truncate text-xs text-slate-400">Continuar conectado ao fechar e abrir o app.</span>
+              </span>
+            </label>
+          )}
 
           {mode === 'signin' && (
             <button
@@ -5268,27 +5288,29 @@ function HomeScreen({
     <div className="w-full min-w-0 overflow-x-hidden p-4 pt-6 sm:p-6 sm:pt-8 space-y-8">
       {/* Header */}
       <header className="flex min-w-0 items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="size-12 shrink-0 rounded-full border-2 border-primary overflow-hidden p-0.5">
-            <AvatarImage
-              src={user.avatar}
-              alt={user.name}
-              className="w-full h-full object-cover rounded-full"
-            />
+        <div className="min-w-0 flex-1">
+          <div className="inline-flex min-h-16 w-full max-w-[13rem] items-center rounded-2xl border border-white/10 bg-[#3e4c37] px-3 py-2 shadow-lg shadow-black/20">
+            <BrandLogo className="h-12 w-full object-left" />
           </div>
           <div className="min-w-0">
-            <p className="text-[10px] font-bold text-primary/80 uppercase tracking-widest">Bem-vindo de volta,</p>
-            <h1 className="break-words text-xl font-bold leading-tight">Olá, {user.name}!</h1>
+            <p className="mt-3 text-[10px] font-black uppercase tracking-[0.22em] text-[#f2a156]">
+              Curitiba e região
+            </p>
+            <h1 className="mt-0.5 break-words text-xl font-black leading-tight">Olá, {user.name}!</h1>
           </div>
         </div>
         <button
           type="button"
           onClick={onOpenProfile}
-          className="bg-primary/10 p-2 rounded-xl text-primary border border-primary/20"
+          className="shrink-0 rounded-2xl border border-primary/30 bg-primary/10 p-1 text-primary"
           aria-label="Abrir perfil"
           title="Abrir perfil"
         >
-          <Bell size={20} />
+          <AvatarImage
+            src={user.avatar}
+            alt={user.name}
+            className="size-12 rounded-xl object-cover"
+          />
         </button>
       </header>
 
