@@ -3977,11 +3977,9 @@ function LoginScreen({
       
       <div className="space-y-5 sm:space-y-8">
         <header className="space-y-3 text-center">
-          <div className="mx-auto flex min-h-28 w-full max-w-xs items-center justify-center rounded-[1.75rem] border border-white/10 bg-[#3e4c37] px-5 py-4 shadow-2xl shadow-black/30">
-            <BrandLogo className="h-20 w-full" />
-          </div>
+          <BrandLogo className="mx-auto h-28 w-full max-w-xs" />
           <div className="space-y-1.5">
-            <h1 className="text-3xl font-black leading-none tracking-tight">Penitência CWB</h1>
+            <h1 className="sr-only">Penitência CWB</h1>
             <p className="text-[10px] font-black uppercase tracking-[0.22em] text-[#f2a156]">
               Onde a penitência vira recompensa
             </p>
@@ -5289,8 +5287,8 @@ function HomeScreen({
       {/* Header */}
       <header className="flex min-w-0 items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="inline-flex min-h-16 w-full max-w-[13rem] items-center rounded-2xl border border-white/10 bg-[#3e4c37] px-3 py-2 shadow-lg shadow-black/20">
-            <BrandLogo className="h-12 w-full object-left" />
+          <div className="flex h-16 w-full max-w-[13rem] items-center">
+            <BrandLogo className="h-14 w-full object-left" />
           </div>
           <div className="min-w-0">
             <p className="mt-3 text-[10px] font-black uppercase tracking-[0.22em] text-[#f2a156]">
